@@ -130,10 +130,9 @@ local EMOTE_NAME = "kawaii pleading beg kitty sitting idle"
 local TELEPORT_COOLDOWN = 1
 
 -- Offset relative to the holder's root.
--- X = left/right, Y = up/down, Z = forward/back.
--- (0, -1, -2) = 1 stud down (towards waist), 2 studs forward.
--- Same orientation as holder -> our back is to them.
-local HOLD_OFFSET = CFrame.new(0, -1, -2)
+-- (0, -0.5, -2) = 0.5 stud down (just below root / waist level),
+-- 2 studs forward. Same orientation as holder -> our back is to them.
+local HOLD_OFFSET = CFrame.new(0, -0.5, -2)
 
 local lastTeleport = 0
 
@@ -146,42 +145,48 @@ local function getRootPart(player)
 end
 
 -- ===== EMOTE =====
--- Loads the emote via the Animator at the highest priority so nothing
--- else can override it, and loops it.
 local function playEmoteOn(humanoid)
 	if not humanoid then return nil end
 	if humanoid.RigType == Enum.HumanoidRigType.R6 then return nil end
 
-	local animator = humanoid:FindFirstChildOfClass("Animator")
-	if not animator then
-		animator = Instance.new("Animator")
-		animator.Parent = humanoid
-	end
-
-	local animation = Instance.new("Animation")
-	animation.AnimationId = "rbxassetid://" .. tostring(EMOTE_ID)
-
 	local track
 	local ok = pcall(function()
-		track = animator:LoadAnimation(animation)
+		track = humanoid:PlayEmoteAndGetAnimTrackById(EMOTE_ID)
 	end)
 
 	if not ok or not track then
-		return nil
+		local description = humanoid:FindFirstChildOfClass("HumanoidDescription")
+		if not description then
+			description = Instance.new("HumanoidDescription")
+			description.Parent = humanoid
+		end
+		pcall(function()
+			description:AddEmote(EMOTE_NAME, EMOTE_ID)
+			track = humanoid:PlayEmoteAndGetAnimTrackById(EMOTE_ID)
+		end)
 	end
 
-	pcall(function()
-		track.Looped = true
-		track.Priority = Enum.AnimationPriority.Action4
-		track:Play(0.1, 1, 1)
-	end)
+	if track then
+		pcall(function()
+			track.Looped = true
+			track.Priority = Enum.AnimationPriority.Action4
+			track:Play()
+		end)
+	end
 
 	return track
 end
 
--- Disabling the default Animate LocalScript is what actually stops
--- run/walk/jump/fall/idle from appearing. Stopping tracks alone is not
--- enough because Animate just replays them every state change.
+local function playEmote()
+	local character = localPlayer.Character
+	if not character then return end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return end
+	return playEmoteOn(humanoid)
+end
+
+-- noanim: disable the default Animate LocalScript so idle/walk/run/jump/fall
+-- never stomp the emote. Re-enabled on release.
 local function freezeAnimateScript(character, disable)
 	if not character then return end
 	local animate = character:FindFirstChild("Animate")
@@ -192,15 +197,47 @@ local function freezeAnimateScript(character, disable)
 	end
 end
 
-local function playEmote()
-	local character = localPlayer.Character
-	if not character then return end
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
+-- ============================================================
+-- STATE
+-- ============================================================
+
+local holdTarget = nil
+local holdTrack = nil
+local savedWalkSpeed = nil
+local savedJumpPower = nil
+local savedJumpHeight = nil
+local savedUseJumpPower = nil
+
+local function applyMovementLock(humanoid)
 	if not humanoid then return end
-	playEmoteOn(humanoid)
+	if savedWalkSpeed == nil then
+		savedWalkSpeed = humanoid.WalkSpeed
+		savedJumpPower = humanoid.JumpPower
+		savedJumpHeight = humanoid.JumpHeight
+		savedUseJumpPower = humanoid.UseJumpPower
+	end
+	humanoid.WalkSpeed = 0
+	humanoid.JumpPower = 0
+	humanoid.JumpHeight = 0
 end
 
--- ===== .f : we tp in front of them, we face them, they face us =====
+local function restoreMovement(humanoid)
+	if not humanoid then return end
+	if savedWalkSpeed ~= nil then
+		humanoid.WalkSpeed = savedWalkSpeed
+		humanoid.JumpPower = savedJumpPower
+		humanoid.JumpHeight = savedJumpHeight
+		if savedUseJumpPower ~= nil then
+			humanoid.UseJumpPower = savedUseJumpPower
+		end
+	end
+	savedWalkSpeed = nil
+	savedJumpPower = nil
+	savedJumpHeight = nil
+	savedUseJumpPower = nil
+end
+
+-- ===== .f : tp in front, face each other, play emote ONCE =====
 local function teleportTo(targetPlayer)
 	if targetPlayer == localPlayer then return end
 
@@ -236,65 +273,12 @@ local function teleportTo(targetPlayer)
 	end
 
 	task.wait(0.15)
+
+	-- One-shot emote, no noanim, no lock. Same as original .f.
 	playEmote()
 end
 
--- ===== .h : we tp to them, latch onto their waist, back to them =====
-local holdTarget = nil
-local holdTrack = nil
-local savedWalkSpeed = nil
-local savedJumpPower = nil
-local savedJumpHeight = nil
-local savedUseJumpPower = nil
-
-local function isOurEmote(track)
-	return track ~= nil and track == holdTrack
-end
-
-local function stopOtherAnimations(humanoid)
-	if not humanoid then return end
-	local animator = humanoid:FindFirstChildOfClass("Animator")
-	if not animator then return end
-	local ok, tracks = pcall(function()
-		return animator:GetPlayingAnimationTracks()
-	end)
-	if not ok or not tracks then return end
-	for _, t in ipairs(tracks) do
-		if not isOurEmote(t) then
-			pcall(function() t:Stop(0) end)
-		end
-	end
-end
-
-local function applyMovementLock(humanoid)
-	if not humanoid then return end
-	if savedWalkSpeed == nil then
-		savedWalkSpeed = humanoid.WalkSpeed
-		savedJumpPower = humanoid.JumpPower
-		savedJumpHeight = humanoid.JumpHeight
-		savedUseJumpPower = humanoid.UseJumpPower
-	end
-	humanoid.WalkSpeed = 0
-	humanoid.JumpPower = 0
-	humanoid.JumpHeight = 0
-end
-
-local function restoreMovement(humanoid)
-	if not humanoid then return end
-	if savedWalkSpeed ~= nil then
-		humanoid.WalkSpeed = savedWalkSpeed
-		humanoid.JumpPower = savedJumpPower
-		humanoid.JumpHeight = savedJumpHeight
-		if savedUseJumpPower ~= nil then
-			humanoid.UseJumpPower = savedUseJumpPower
-		end
-	end
-	savedWalkSpeed = nil
-	savedJumpPower = nil
-	savedJumpHeight = nil
-	savedUseJumpPower = nil
-end
-
+-- ===== .h : attach to waist, noanim, persistent emote =====
 local function stopHold()
 	if holdTarget == nil then return end
 	holdTarget = nil
@@ -305,7 +289,6 @@ local function stopHold()
 		restoreMovement(myHumanoid)
 	end
 
-	-- Re-enable the default Animate script so normal animations resume
 	freezeAnimateScript(myCharacter, false)
 
 	if holdTrack then
@@ -324,7 +307,14 @@ local function startHold(holderPlayer)
 	local myCharacter = localPlayer.Character
 	if not myCharacter then return end
 
-	-- Immediate snap so we don't wait a frame
+	local myHumanoid = myCharacter:FindFirstChildOfClass("Humanoid")
+	if not myHumanoid then return end
+
+	-- 1) Play the emote ONCE while Animate is still enabled
+	--    (PlayEmoteAndGetAnimTrackById silently fails if Animate is off).
+	holdTrack = playEmoteOn(myHumanoid)
+
+	-- 2) Snap to holder's waist.
 	local holderCharacter = holderPlayer.Character
 	local holderRoot = holderCharacter and holderCharacter:FindFirstChild("HumanoidRootPart")
 	if holderRoot then
@@ -333,15 +323,16 @@ local function startHold(holderPlayer)
 		end)
 	end
 
-	local myHumanoid = myCharacter:FindFirstChildOfClass("Humanoid")
-	if myHumanoid then
-		applyMovementLock(myHumanoid)
-		freezeAnimateScript(myCharacter, true)  -- kill default walk/run/idle/jump/fall
-		holdTrack = playEmoteOn(myHumanoid)      -- same emote path as .f
-		stopOtherAnimations(myHumanoid)
-	end
+	-- 3) Enable noanim so idle/walk/run/jump/fall never stomp the emote,
+	--    and zero movement so you can't move away.
+	applyMovementLock(myHumanoid)
+	freezeAnimateScript(myCharacter, true)
 end
 
+-- ============================================================
+-- HEARTBEAT: tracks position, keeps noanim active, and re-applies
+-- the emote only if it has stopped playing.
+-- ============================================================
 env.__fFollowConn = RunService.Heartbeat:Connect(function()
 	if not holdTarget then return end
 
@@ -366,25 +357,30 @@ env.__fFollowConn = RunService.Heartbeat:Connect(function()
 	local myHumanoid = myCharacter:FindFirstChildOfClass("Humanoid")
 	if myHumanoid then
 		applyMovementLock(myHumanoid)
-		freezeAnimateScript(myCharacter, true)
 
-		-- Keep the emote alive (replay if it somehow stops)
+		-- If the emote stopped, briefly re-enable Animate so the emote
+		-- API call succeeds, then re-disable it (noanim stays on).
 		local playing = false
 		if holdTrack then
 			pcall(function() playing = holdTrack.IsPlaying end)
 		end
+
 		if not playing then
 			if holdTrack then
 				pcall(function() holdTrack:Stop(0) end)
 			end
+			freezeAnimateScript(myCharacter, false)
 			holdTrack = playEmoteOn(myHumanoid)
+			freezeAnimateScript(myCharacter, true)
+		else
+			freezeAnimateScript(myCharacter, true)
 		end
-
-		-- Belt-and-suspenders: stop anything that isn't our emote
-		stopOtherAnimations(myHumanoid)
 	end
 end)
 
+-- ============================================================
+-- CHAT LISTENER
+-- ============================================================
 local connection = TextChatService.MessageReceived:Connect(function(message)
 	local sender = message.TextSource
 	if not sender then return end
@@ -394,14 +390,12 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 
 	local text = message.Text:lower()
 
-	-- Self commands (silent)
 	if senderId == localPlayer.UserId then
 		if text == ".disable" then
 			env.__fScriptEnabled = false
 		elseif text == ".enable" then
 			env.__fScriptEnabled = true
 		elseif text == ".h" then
-			-- We (the held one) type .h -> release
 			stopHold()
 		end
 		return
@@ -415,7 +409,6 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 	if text == ".f" then
 		teleportTo(targetPlayer)
 	elseif text == ".h" then
-		-- If the person typing .h is the one currently holding us -> release
 		if holdTarget ~= nil and targetPlayer == holdTarget then
 			stopHold()
 		else
