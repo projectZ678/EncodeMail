@@ -1,0 +1,1 @@
+{"name":"encode-mail-worker","private":true,"devDependencies":{"wrangler":"^4.39.0"},"scripts":{"dev":"wrangler dev","deploy":"wrangler deploy"}}
