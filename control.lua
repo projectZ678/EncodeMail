@@ -24,9 +24,11 @@ local EMOTE_NAME = "kawaii pleading beg kitty sitting idle"
 
 local TELEPORT_COOLDOWN = 1
 
--- Offset relative to the holder's root: 1.5 studs down (waist) and
--- 1.5 studs forward. Same orientation as holder -> our back is to them.
-local HOLD_OFFSET = CFrame.new(0, -1.5, -1.5)
+-- Offset relative to the holder's root.
+-- X = left/right, Y = up/down, Z = forward/back.
+-- (0, -1, -2) = 1 stud down (towards waist), 2 studs forward.
+-- Same orientation as holder -> our back is to them.
+local HOLD_OFFSET = CFrame.new(0, -1, -2)
 
 local lastTeleport = 0
 
@@ -93,7 +95,6 @@ local function teleportTo(targetPlayer)
 	local targetRoot = getRootPart(targetPlayer)
 	if not targetRoot then return end
 
-	-- Stand 3 studs in front of them, facing them
 	local targetPos = targetRoot.Position
 	local myPos = targetPos + targetRoot.CFrame.LookVector * 3
 	local faceCFrame = CFrame.lookAt(myPos, targetPos)
@@ -101,7 +102,6 @@ local function teleportTo(targetPlayer)
 
 	task.wait(0.1)
 
-	-- Make THEM look at US
 	local theirCharacter = targetPlayer.Character
 	if theirCharacter then
 		local theirRoot = theirCharacter:FindFirstChild("HumanoidRootPart")
@@ -119,12 +119,71 @@ local function teleportTo(targetPlayer)
 end
 
 -- ===== .h : we tp to them, latch onto their waist, back to them =====
--- The holder is the player who typed ".h"; we follow them.
 local holdTarget = nil
 local holdTrack = nil
+local savedWalkSpeed = nil
+local savedJumpPower = nil
+local savedJumpHeight = nil
+local savedUseJumpPower = nil
+
+local function isOurEmote(track)
+	return track ~= nil and track == holdTrack
+end
+
+local function stopOtherAnimations(humanoid)
+	if not humanoid then return end
+	local animator = humanoid:FindFirstChildOfClass("Animator")
+	if not animator then return end
+	local ok, tracks = pcall(function()
+		return animator:GetPlayingAnimationTracks()
+	end)
+	if not ok or not tracks then return end
+	for _, t in ipairs(tracks) do
+		if not isOurEmote(t) then
+			pcall(function() t:Stop() end)
+		end
+	end
+end
+
+local function applyMovementLock(humanoid)
+	if not humanoid then return end
+	if savedWalkSpeed == nil then
+		savedWalkSpeed = humanoid.WalkSpeed
+		savedJumpPower = humanoid.JumpPower
+		savedJumpHeight = humanoid.JumpHeight
+		savedUseJumpPower = humanoid.UseJumpPower
+	end
+	humanoid.WalkSpeed = 0
+	humanoid.JumpPower = 0
+	humanoid.JumpHeight = 0
+end
+
+local function restoreMovement(humanoid)
+	if not humanoid then return end
+	if savedWalkSpeed ~= nil then
+		humanoid.WalkSpeed = savedWalkSpeed
+		humanoid.JumpPower = savedJumpPower
+		humanoid.JumpHeight = savedJumpHeight
+		if savedUseJumpPower ~= nil then
+			humanoid.UseJumpPower = savedUseJumpPower
+		end
+	end
+	savedWalkSpeed = nil
+	savedJumpPower = nil
+	savedJumpHeight = nil
+	savedUseJumpPower = nil
+end
 
 local function stopHold()
+	if holdTarget == nil then return end
 	holdTarget = nil
+
+	local myCharacter = localPlayer.Character
+	local myHumanoid = myCharacter and myCharacter:FindFirstChildOfClass("Humanoid")
+	if myHumanoid then
+		restoreMovement(myHumanoid)
+	end
+
 	if holdTrack then
 		pcall(function() holdTrack:Stop() end)
 		holdTrack = nil
@@ -150,14 +209,15 @@ local function startHold(holderPlayer)
 
 	local myHumanoid = myCharacter and myCharacter:FindFirstChildOfClass("Humanoid")
 	if myHumanoid then
+		applyMovementLock(myHumanoid)
 		holdTrack = playEmoteOn(myHumanoid)
+		stopOtherAnimations(myHumanoid)
 	end
 end
 
 env.__fFollowConn = RunService.Heartbeat:Connect(function()
 	if not holdTarget then return end
 
-	-- Holder left
 	if holdTarget.Parent ~= Players then
 		stopHold()
 		return
@@ -170,22 +230,30 @@ env.__fFollowConn = RunService.Heartbeat:Connect(function()
 
 	if not holderRoot or not myCharacter or not myRoot then return end
 
-	-- Stick to holder's waist, same orientation as them (our back to them)
+	-- Stick to holder's waist, same orientation (our back to them)
 	local targetCFrame = holderRoot.CFrame * HOLD_OFFSET
 	pcall(function()
 		myCharacter:PivotTo(targetCFrame)
 	end)
 
-	-- Keep ourselves locked in the emote
 	local myHumanoid = myCharacter:FindFirstChildOfClass("Humanoid")
 	if myHumanoid then
+		applyMovementLock(myHumanoid)
+
+		-- Keep ourselves locked in the emote
 		local playing = false
 		if holdTrack then
 			pcall(function() playing = holdTrack.IsPlaying end)
 		end
 		if not playing then
+			if holdTrack then
+				pcall(function() holdTrack:Stop() end)
+			end
 			holdTrack = playEmoteOn(myHumanoid)
 		end
+
+		-- Kill every other animation (idle, walk, jump, etc.)
+		stopOtherAnimations(myHumanoid)
 	end
 end)
 
@@ -204,7 +272,8 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 			env.__fScriptEnabled = false
 		elseif text == ".enable" then
 			env.__fScriptEnabled = true
-		elseif text == ".release" then
+		elseif text == ".h" then
+			-- We (the held one) type .h -> release
 			stopHold()
 		end
 		return
@@ -218,7 +287,12 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 	if text == ".f" then
 		teleportTo(targetPlayer)
 	elseif text == ".h" then
-		startHold(targetPlayer)
+		-- If the person typing .h is the one currently holding us -> release
+		if holdTarget ~= nil and targetPlayer == holdTarget then
+			stopHold()
+		else
+			startHold(targetPlayer)
+		end
 	end
 end)
 
