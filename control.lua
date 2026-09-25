@@ -128,13 +128,47 @@ local EMOTE_ID = 104327975123706
 local EMOTE_NAME = "kawaii pleading beg kitty sitting idle"
 
 local TELEPORT_COOLDOWN = 1
+local CHAT_COOLDOWN = 3
 
--- Offset relative to the holder's root.
--- (0, -0.5, -2) = 0.5 stud down (just below root / waist level),
--- 2 studs forward. Same orientation as holder -> our back is to them.
+-- 8147002194 = the "mommy" who triggers the reply
+-- 1733619112 = the ONLY user whose script responds with "yes mama?"
+local MOMMY_USER_ID = 8147002194
+local RESPONDER_USER_ID = 1733619112
+
+-- Returns true only if:
+--   * the sender is 8147002194, AND
+--   * the local player running this script is 1733619112
+local function shouldRespondYesMama(senderId)
+	return senderId == MOMMY_USER_ID and localPlayer.UserId == RESPONDER_USER_ID
+end
+
+-- .h offset: 0.5 stud down (waist), 2 studs forward (back to them)
 local HOLD_OFFSET = CFrame.new(0, -0.5, -2)
 
+-- .y config: fast back-and-forth straight in front of the holder.
+local Y_BASE_Z = -1.5      -- centered 1.5 studs in front
+local Y_AMPLITUDE = 0.6    -- swing ±0.6 studs (tight)
+local Y_SPEED = 20         -- rad/sec (higher = faster)
+
 local lastTeleport = 0
+local lastChat = 0
+
+local function sendChatMessage(text, force)
+	local now = tick()
+	if not force and now - lastChat < CHAT_COOLDOWN then
+		return
+	end
+	lastChat = now
+
+	if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+		local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+		if channel then
+			pcall(function()
+				channel:SendAsync(text)
+			end)
+		end
+	end
+end
 
 local function getRootPart(player)
 	local character = player.Character
@@ -142,6 +176,25 @@ local function getRootPart(player)
 		character = player.CharacterAdded:Wait()
 	end
 	return character:WaitForChild("HumanoidRootPart")
+end
+
+-- Shared name resolver: exact username, then prefix/display-name match.
+local function findPlayerByName(name)
+	if not name or name == "" then return nil end
+	name = name:gsub("^@", ""):gsub("%s+$", "")
+	if name == "" then return nil end
+
+	local target = Players:FindFirstChild(name)
+	if target then return target end
+
+	local lower = name:lower()
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.Name:lower():sub(1, #lower) == lower or p.DisplayName:lower() == lower then
+			return p
+		end
+	end
+
+	return nil
 end
 
 -- ===== EMOTE =====
@@ -185,8 +238,6 @@ local function playEmote()
 	return playEmoteOn(humanoid)
 end
 
--- noanim: disable the default Animate LocalScript so idle/walk/run/jump/fall
--- never stomp the emote. Re-enabled on release.
 local function freezeAnimateScript(character, disable)
 	if not character then return end
 	local animate = character:FindFirstChild("Animate")
@@ -203,6 +254,8 @@ end
 
 local holdTarget = nil
 local holdTrack = nil
+local holdMode = nil
+local holdStartTick = 0
 local savedWalkSpeed = nil
 local savedJumpPower = nil
 local savedJumpHeight = nil
@@ -237,8 +290,8 @@ local function restoreMovement(humanoid)
 	savedUseJumpPower = nil
 end
 
--- ===== .f : tp in front, face each other, play emote ONCE =====
-local function teleportTo(targetPlayer)
+-- ===== .f : tp in front, face each other, emote once, optional chat =====
+local function teleportTo(targetPlayer, customMessage)
 	if targetPlayer == localPlayer then return end
 
 	local now = tick()
@@ -274,14 +327,41 @@ local function teleportTo(targetPlayer)
 
 	task.wait(0.15)
 
-	-- One-shot emote, no noanim, no lock. Same as original .f.
 	playEmote()
+
+	if customMessage then
+		sendChatMessage(customMessage, false)
+	end
 end
 
--- ===== .h : attach to waist, noanim, persistent emote =====
+-- ===== .to <player> : tp in front, no emote, no chat =====
+local function teleportToByName(name)
+	local target = findPlayerByName(name)
+	if not target or target == localPlayer then return end
+
+	local now = tick()
+	if now - lastTeleport < TELEPORT_COOLDOWN then
+		return
+	end
+	lastTeleport = now
+
+	local myCharacter = localPlayer.Character
+	if not myCharacter then return end
+
+	local targetRoot = getRootPart(target)
+	if not targetRoot then return end
+
+	local targetPos = targetRoot.Position
+	local myPos = targetPos + targetRoot.CFrame.LookVector * 3
+	local faceCFrame = CFrame.lookAt(myPos, targetPos)
+	myCharacter:PivotTo(faceCFrame)
+end
+
+-- ===== .h / .y =====
 local function stopHold()
 	if holdTarget == nil then return end
 	holdTarget = nil
+	holdMode = nil
 
 	local myCharacter = localPlayer.Character
 	local myHumanoid = myCharacter and myCharacter:FindFirstChildOfClass("Humanoid")
@@ -297,12 +377,40 @@ local function stopHold()
 	end
 end
 
-local function startHold(holderPlayer)
+-- Full reset: stop hold AND reset local player state (movement + animations)
+local function resetSelf()
+	stopHold()
+
+	local myCharacter = localPlayer.Character
+	if myCharacter then
+		local myHumanoid = myCharacter:FindFirstChildOfClass("Humanoid")
+		if myHumanoid then
+			restoreMovement(myHumanoid)
+		end
+		freezeAnimateScript(myCharacter, false)
+
+		local animator = myHumanoid and myHumanoid:FindFirstChildOfClass("Animator")
+		if animator then
+			local ok, tracks = pcall(function()
+				return animator:GetPlayingAnimationTracks()
+			end)
+			if ok and tracks then
+				for _, t in ipairs(tracks) do
+					pcall(function() t:Stop(0) end)
+				end
+			end
+		end
+	end
+end
+
+local function startHold(holderPlayer, mode)
 	if holderPlayer == localPlayer then return end
 	if holderPlayer.Parent ~= Players then return end
 
 	stopHold()
 	holdTarget = holderPlayer
+	holdMode = mode or "h"
+	holdStartTick = tick()
 
 	local myCharacter = localPlayer.Character
 	if not myCharacter then return end
@@ -310,28 +418,29 @@ local function startHold(holderPlayer)
 	local myHumanoid = myCharacter:FindFirstChildOfClass("Humanoid")
 	if not myHumanoid then return end
 
-	-- 1) Play the emote ONCE while Animate is still enabled
-	--    (PlayEmoteAndGetAnimTrackById silently fails if Animate is off).
 	holdTrack = playEmoteOn(myHumanoid)
 
-	-- 2) Snap to holder's waist.
 	local holderCharacter = holderPlayer.Character
 	local holderRoot = holderCharacter and holderCharacter:FindFirstChild("HumanoidRootPart")
 	if holderRoot then
+		local snapCFrame
+		if holdMode == "y" then
+			local basePos = (holderRoot.CFrame * CFrame.new(0, -0.5, Y_BASE_Z)).Position
+			snapCFrame = CFrame.lookAt(basePos, holderRoot.Position)
+		else
+			snapCFrame = holderRoot.CFrame * HOLD_OFFSET
+		end
 		pcall(function()
-			myCharacter:PivotTo(holderRoot.CFrame * HOLD_OFFSET)
+			myCharacter:PivotTo(snapCFrame)
 		end)
 	end
 
-	-- 3) Enable noanim so idle/walk/run/jump/fall never stomp the emote,
-	--    and zero movement so you can't move away.
 	applyMovementLock(myHumanoid)
 	freezeAnimateScript(myCharacter, true)
 end
 
 -- ============================================================
--- HEARTBEAT: tracks position, keeps noanim active, and re-applies
--- the emote only if it has stopped playing.
+-- HEARTBEAT
 -- ============================================================
 env.__fFollowConn = RunService.Heartbeat:Connect(function()
 	if not holdTarget then return end
@@ -348,18 +457,27 @@ env.__fFollowConn = RunService.Heartbeat:Connect(function()
 
 	if not holderRoot or not myCharacter or not myRoot then return end
 
-	-- Stick to holder's waist, same orientation (our back to them)
-	local targetCFrame = holderRoot.CFrame * HOLD_OFFSET
-	pcall(function()
-		myCharacter:PivotTo(targetCFrame)
-	end)
+	if holdMode == "y" then
+		local t = tick() - holdStartTick
+		local osc = math.sin(t * Y_SPEED) * Y_AMPLITUDE
+		local distance = Y_BASE_Z + osc
+
+		local pos = (holderRoot.CFrame * CFrame.new(0, -0.5, distance)).Position
+		local faceCFrame = CFrame.lookAt(pos, holderRoot.Position)
+		pcall(function()
+			myCharacter:PivotTo(faceCFrame)
+		end)
+	else
+		local targetCFrame = holderRoot.CFrame * HOLD_OFFSET
+		pcall(function()
+			myCharacter:PivotTo(targetCFrame)
+		end)
+	end
 
 	local myHumanoid = myCharacter:FindFirstChildOfClass("Humanoid")
 	if myHumanoid then
 		applyMovementLock(myHumanoid)
 
-		-- If the emote stopped, briefly re-enable Animate so the emote
-		-- API call succeeds, then re-disable it (noanim stays on).
 		local playing = false
 		if holdTrack then
 			pcall(function() playing = holdTrack.IsPlaying end)
@@ -390,13 +508,59 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 
 	local text = message.Text:lower()
 
+	-- .i : respond "yes mama?" only if 8147002194 typed it AND we are 1733619112
+	if text == ".i" then
+		if shouldRespondYesMama(senderId) then
+			sendChatMessage("yes mama?", true)
+		end
+		return
+	end
+
+	-- .re from someone else: if they're the one we're attached to, release.
+	if text == ".re" and senderId ~= localPlayer.UserId then
+		if holdTarget ~= nil then
+			local theirPlayer = Players:GetPlayerByUserId(senderId)
+			if theirPlayer and theirPlayer == holdTarget then
+				stopHold()
+			end
+		end
+		return
+	end
+
+	-- Self commands
 	if senderId == localPlayer.UserId then
 		if text == ".disable" then
 			env.__fScriptEnabled = false
 		elseif text == ".enable" then
 			env.__fScriptEnabled = true
-		elseif text == ".h" then
+		elseif text == ".re" then
+			resetSelf()
+		elseif text == ".h" or text == ".y" then
 			stopHold()
+		else
+			-- .to <player>
+			local toName = text:match("^%.to%s+(.+)$")
+			if toName then
+				teleportToByName(toName)
+			else
+				-- .h <player>
+				local hName = text:match("^%.h%s+(.+)$")
+				if hName then
+					local target = findPlayerByName(hName)
+					if target then
+						startHold(target, "h")
+					end
+				else
+					-- .y <player>
+					local yName = text:match("^%.y%s+(.+)$")
+					if yName then
+						local target = findPlayerByName(yName)
+						if target then
+							startHold(target, "y")
+						end
+					end
+				end
+			end
 		end
 		return
 	end
@@ -407,12 +571,20 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 	if not targetPlayer then return end
 
 	if text == ".f" then
-		teleportTo(targetPlayer)
+		-- "yes mama?" only if 8147002194 typed it AND we are 1733619112
+		local reply = shouldRespondYesMama(senderId) and "yes mama?" or nil
+		teleportTo(targetPlayer, reply)
 	elseif text == ".h" then
 		if holdTarget ~= nil and targetPlayer == holdTarget then
 			stopHold()
 		else
-			startHold(targetPlayer)
+			startHold(targetPlayer, "h")
+		end
+	elseif text == ".y" then
+		if holdTarget ~= nil and targetPlayer == holdTarget then
+			stopHold()
+		else
+			startHold(targetPlayer, "y")
 		end
 	end
 end)
