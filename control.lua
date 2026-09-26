@@ -132,11 +132,11 @@ local CHAT_COOLDOWN = 3
 
 -- User IDs and their custom replies
 local MOMMY_USER_ID = 8147002194        -- types .f/.i -> "yes mama?" (only if responder is 1733619112)
-local RESPONDER_USER_ID = 1733619112    -- the only user whose script replies "yes mama?"
+local RESPONDER_USER_ID = 1733619112    -- the only user whose script replies "yes mama?" AND the only user who can use .c
 local DADA_USER_ID = 8051317045         -- types .f -> "im here dada"; types .i -> "geeg"
 
--- .h offset: 0.5 stud down (waist), 2 studs forward (back to them)
-local HOLD_OFFSET = CFrame.new(0, -0.5, -2)
+-- .h offset: at root level (waist), 2 studs forward (back to them)
+local HOLD_OFFSET = CFrame.new(0, 0, -2)
 
 -- .y config: fast back-and-forth straight in front of the holder.
 local Y_BASE_Z = -1.5      -- centered 1.5 studs in front
@@ -171,18 +171,34 @@ local function getRootPart(player)
 	return character:WaitForChild("HumanoidRootPart")
 end
 
--- Shared name resolver: exact username, then prefix/display-name match.
+-- Shared name resolver: exact username, then prefix on Name OR DisplayName.
 local function findPlayerByName(name)
 	if not name or name == "" then return nil end
 	name = name:gsub("^@", ""):gsub("%s+$", "")
 	if name == "" then return nil end
 
+	-- Exact username
 	local target = Players:FindFirstChild(name)
 	if target then return target end
 
 	local lower = name:lower()
+	local len = #lower
+
+	-- Prefix match on Name, then prefix match on DisplayName, then exact DisplayName
 	for _, p in ipairs(Players:GetPlayers()) do
-		if p.Name:lower():sub(1, #lower) == lower or p.DisplayName:lower() == lower then
+		if p.Name:lower():sub(1, len) == lower then
+			return p
+		end
+	end
+
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.DisplayName:lower():sub(1, len) == lower then
+			return p
+		end
+	end
+
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.DisplayName:lower() == lower then
 			return p
 		end
 	end
@@ -418,7 +434,7 @@ local function startHold(holderPlayer, mode)
 	if holderRoot then
 		local snapCFrame
 		if holdMode == "y" then
-			local basePos = (holderRoot.CFrame * CFrame.new(0, -0.5, Y_BASE_Z)).Position
+			local basePos = (holderRoot.CFrame * CFrame.new(0, 0, Y_BASE_Z)).Position
 			snapCFrame = CFrame.lookAt(basePos, holderRoot.Position)
 		else
 			snapCFrame = holderRoot.CFrame * HOLD_OFFSET
@@ -455,7 +471,7 @@ env.__fFollowConn = RunService.Heartbeat:Connect(function()
 		local osc = math.sin(t * Y_SPEED) * Y_AMPLITUDE
 		local distance = Y_BASE_Z + osc
 
-		local pos = (holderRoot.CFrame * CFrame.new(0, -0.5, distance)).Position
+		local pos = (holderRoot.CFrame * CFrame.new(0, 0, distance)).Position
 		local faceCFrame = CFrame.lookAt(pos, holderRoot.Position)
 		pcall(function()
 			myCharacter:PivotTo(faceCFrame)
@@ -500,14 +516,23 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 	if not senderId then return end
 
 	local text = message.Text:lower()
+	local rawText = message.Text
+
+	-- .c <message> : ONLY UserId 1733619112 can trigger this.
+	-- Every OTHER script user in the game types <message> in chat.
+	if senderId == RESPONDER_USER_ID and senderId ~= localPlayer.UserId then
+		local cMessage = rawText:match("^[.]c%s+(.+)$")
+		if cMessage and cMessage ~= "" then
+			sendChatMessage(cMessage, true)
+			return
+		end
+	end
 
 	-- .i : respond with the right message based on sender
 	if text == ".i" then
 		if senderId == MOMMY_USER_ID and localPlayer.UserId == RESPONDER_USER_ID then
-			-- 8147002194 typed .i and WE are 1733619112
 			sendChatMessage("yes mama?", true)
 		elseif senderId == DADA_USER_ID then
-			-- 8051317045 typed .i
 			sendChatMessage("geeg", true)
 		end
 		return
@@ -536,12 +561,12 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 			stopHold()
 		else
 			-- .to <player>
-			local toName = text:match("^%.to%s+(.+)$")
+			local toName = rawText:match("^[.]to%s+(.+)$")
 			if toName then
 				teleportToByName(toName)
 			else
 				-- .h <player>
-				local hName = text:match("^%.h%s+(.+)$")
+				local hName = rawText:match("^[.]h%s+(.+)$")
 				if hName then
 					local target = findPlayerByName(hName)
 					if target then
@@ -549,7 +574,7 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 					end
 				else
 					-- .y <player>
-					local yName = text:match("^%.y%s+(.+)$")
+					local yName = rawText:match("^[.]y%s+(.+)$")
 					if yName then
 						local target = findPlayerByName(yName)
 						if target then
@@ -568,12 +593,11 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 	if not targetPlayer then return end
 
 	if text == ".f" then
-		-- Pick the reply message based on sender
 		local reply = nil
 		if senderId == MOMMY_USER_ID and localPlayer.UserId == RESPONDER_USER_ID then
-			reply = "yes mama?"      -- 8147002194 typed, we are 1733619112
+			reply = "yes mama?"
 		elseif senderId == DADA_USER_ID then
-			reply = "im here dada"   -- 8051317045 typed
+			reply = "im here dada"
 		end
 		teleportTo(targetPlayer, reply)
 	elseif text == ".h" then
