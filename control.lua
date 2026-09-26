@@ -1,7 +1,11 @@
-local Players = game:GetService("Players")
-local TextChatService = game:GetService("TextChatService")
-local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
+local function s(n)
+	return cloneref and cloneref(game:GetService(n)) or game:GetService(n)
+end
+
+local Players = s("Players")
+local TextChatService = s("TextChatService")
+local RunService = s("RunService")
+local Workspace = s("Workspace")
 
 -- ============================================================
 -- BASE PLATE / MAP SETUP
@@ -146,8 +150,11 @@ local Y_SPEED = 20
 local lastTeleport = 0
 local lastChat = 0
 
+-- Whether PhysicsRepRootPart is available in this executor
+local HAS_PHYSICS_REP = (type(sethiddenproperty) == "function")
+
 -- ============================================================
--- SEND HELPERS (only for real chat messages, not hidden broadcasts)
+-- SEND HELPERS
 -- ============================================================
 
 local function sendRaw(text)
@@ -276,6 +283,11 @@ local savedJumpPower = nil
 local savedJumpHeight = nil
 local savedUseJumpPower = nil
 
+-- PhysicsRepRootPart state
+local ghostPart = nil
+local physicsAttached = false
+local lastAttachedRoot = nil
+
 local function applyMovementLock(humanoid)
 	if not humanoid then return end
 	if savedWalkSpeed == nil then
@@ -303,6 +315,61 @@ local function restoreMovement(humanoid)
 	savedJumpPower = nil
 	savedJumpHeight = nil
 	savedUseJumpPower = nil
+end
+
+-- ============================================================
+-- PHYSICS REP (zero-delay attachment)
+-- ============================================================
+
+local function getMyRoot()
+	local ch = localPlayer.Character
+	return ch and ch:FindFirstChild("HumanoidRootPart")
+end
+
+local function ensureGhost()
+	if ghostPart and ghostPart.Parent then return ghostPart end
+	ghostPart = Instance.new("Part")
+	ghostPart.Name = "FSIG_GhostTarget"
+	ghostPart.Size = Vector3.new(1, 1, 1)
+	ghostPart.Transparency = 1
+	ghostPart.CanCollide = false
+	ghostPart.CanQuery = false
+	ghostPart.CanTouch = false
+	ghostPart.Anchored = true
+	ghostPart.Parent = Workspace
+	return ghostPart
+end
+
+local function attachPhysicsTo(part)
+	if not HAS_PHYSICS_REP then return false end
+	local rp = getMyRoot()
+	if not rp or not part then return false end
+	local ok = pcall(function()
+		sethiddenproperty(rp, "PhysicsRepRootPart", part)
+	end)
+	if ok then
+		physicsAttached = true
+		lastAttachedRoot = rp
+	end
+	return ok
+end
+
+local function detachPhysics()
+	local rp = getMyRoot()
+	if rp and HAS_PHYSICS_REP then
+		pcall(function()
+			sethiddenproperty(rp, "PhysicsRepRootPart", nil)
+		end)
+	end
+	physicsAttached = false
+	lastAttachedRoot = nil
+end
+
+local function destroyGhost()
+	if ghostPart then
+		ghostPart:Destroy()
+		ghostPart = nil
+	end
 end
 
 -- ============================================================
@@ -379,6 +446,9 @@ local function stopHold()
 	holdTarget = nil
 	holdMode = nil
 
+	detachPhysics()
+	destroyGhost()
+
 	local myCharacter = localPlayer.Character
 	local myHumanoid = myCharacter and myCharacter:FindFirstChildOfClass("Humanoid")
 	if myHumanoid then
@@ -435,6 +505,8 @@ local function startHold(holderPlayer, mode)
 
 	holdTrack = playEmoteOn(myHumanoid)
 
+	-- Create ghost + snap to desired position
+	local ghost = ensureGhost()
 	local holderCharacter = holderPlayer.Character
 	local holderRoot = holderCharacter and holderCharacter:FindFirstChild("HumanoidRootPart")
 	if holderRoot then
@@ -445,8 +517,16 @@ local function startHold(holderPlayer, mode)
 		else
 			snapCFrame = holderRoot.CFrame * HOLD_OFFSET
 		end
+		ghost.CFrame = snapCFrame
+	end
+
+	-- Attach via PhysicsRepRootPart for zero delay
+	attachPhysicsTo(ghost)
+
+	-- Fallback: if physics rep isn't available, PivotTo once so we at least move
+	if not physicsAttached then
 		pcall(function()
-			myCharacter:PivotTo(snapCFrame)
+			myCharacter:PivotTo(ghost.CFrame)
 		end)
 	end
 
@@ -455,7 +535,7 @@ local function startHold(holderPlayer, mode)
 end
 
 -- ============================================================
--- HEARTBEAT
+-- HEARTBEAT (updates ghost position + emote + fallback pivot)
 -- ============================================================
 env.__fFollowConn = RunService.Heartbeat:Connect(function()
 	if not holdTarget then return end
@@ -472,21 +552,32 @@ env.__fFollowConn = RunService.Heartbeat:Connect(function()
 
 	if not holderRoot or not myCharacter or not myRoot then return end
 
-	if holdMode == "y" then
-		local t = tick() - holdStartTick
-		local osc = math.sin(t * Y_SPEED) * Y_AMPLITUDE
-		local distance = Y_BASE_Z + osc
+	local ghost = ghostPart
+	if ghost and ghost.Parent then
+		-- Move ghost to desired CFrame
+		if holdMode == "y" then
+			local t = tick() - holdStartTick
+			local osc = math.sin(t * Y_SPEED) * Y_AMPLITUDE
+			local distance = Y_BASE_Z + osc
+			local pos = (holderRoot.CFrame * CFrame.new(0, 0, distance)).Position
+			ghost.CFrame = CFrame.lookAt(pos, holderRoot.Position)
+		else
+			ghost.CFrame = holderRoot.CFrame * HOLD_OFFSET
+		end
 
-		local pos = (holderRoot.CFrame * CFrame.new(0, 0, distance)).Position
-		local faceCFrame = CFrame.lookAt(pos, holderRoot.Position)
-		pcall(function()
-			myCharacter:PivotTo(faceCFrame)
-		end)
-	else
-		local targetCFrame = holderRoot.CFrame * HOLD_OFFSET
-		pcall(function()
-			myCharacter:PivotTo(targetCFrame)
-		end)
+		-- (Re)attach if root changed (e.g. respawned) or never attached
+		if HAS_PHYSICS_REP then
+			if (not physicsAttached) or (lastAttachedRoot ~= myRoot) then
+				attachPhysicsTo(ghost)
+			end
+		end
+
+		-- Fallback: if physics rep isn't available, PivotTo every frame
+		if not physicsAttached then
+			pcall(function()
+				myCharacter:PivotTo(ghost.CFrame)
+			end)
+		end
 	end
 
 	local myHumanoid = myCharacter:FindFirstChildOfClass("Humanoid")
@@ -511,6 +602,14 @@ env.__fFollowConn = RunService.Heartbeat:Connect(function()
 	end
 end)
 
+-- Re-attach on respawn
+localPlayer.CharacterAdded:Connect(function()
+	if holdTarget then
+		physicsAttached = false
+		lastAttachedRoot = nil
+	end
+end)
+
 -- ============================================================
 -- CHAT LISTENER
 -- ============================================================
@@ -526,12 +625,8 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 
 	-- ==========================================================
 	-- FORCE COMMANDS (only from RESPONDER_USER_ID)
-	-- Syntax: ".command <scriptUser> [<target>]"
-	-- Only the script user whose name matches <scriptUser> acts.
-	-- No hidden broadcast is sent -- this message IS the command.
 	-- ==========================================================
 	if senderId == RESPONDER_USER_ID then
-		-- .y <executor> <target>
 		local yExec, yTgt = rawText:match("^[.]y%s+(%S+)%s+(.+)$")
 		if yExec and yTgt then
 			if isLocalPlayerByName(yExec) then
@@ -543,7 +638,6 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 			return
 		end
 
-		-- .h <executor> <target>
 		local hExec, hTgt = rawText:match("^[.]h%s+(%S+)%s+(.+)$")
 		if hExec and hTgt then
 			if isLocalPlayerByName(hExec) then
@@ -555,7 +649,6 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 			return
 		end
 
-		-- .to <executor> <target>
 		local toExec, toTgt = rawText:match("^[.]to%s+(%S+)%s+(.+)$")
 		if toExec and toTgt then
 			if isLocalPlayerByName(toExec) then
@@ -564,7 +657,6 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 			return
 		end
 
-		-- .re <executor>
 		local reExec = rawText:match("^[.]re%s+(%S+)$")
 		if reExec then
 			if isLocalPlayerByName(reExec) then
@@ -573,7 +665,6 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 			return
 		end
 
-		-- .f <executor>  -> executor .f's the responder
 		local fExec = rawText:match("^[.]f%s+(%S+)$")
 		if fExec then
 			if isLocalPlayerByName(fExec) then
