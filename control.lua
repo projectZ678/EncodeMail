@@ -130,17 +130,10 @@ local EMOTE_NAME = "kawaii pleading beg kitty sitting idle"
 local TELEPORT_COOLDOWN = 1
 local CHAT_COOLDOWN = 3
 
--- 8147002194 = the "mommy" who triggers the reply
--- 1733619112 = the ONLY user whose script responds with "yes mama?"
-local MOMMY_USER_ID = 8147002194
-local RESPONDER_USER_ID = 1733619112
-
--- Returns true only if:
---   * the sender is 8147002194, AND
---   * the local player running this script is 1733619112
-local function shouldRespondYesMama(senderId)
-	return senderId == MOMMY_USER_ID and localPlayer.UserId == RESPONDER_USER_ID
-end
+-- User IDs and their custom replies
+local MOMMY_USER_ID = 8147002194        -- types .f/.i -> "yes mama?" (only if responder is 1733619112)
+local RESPONDER_USER_ID = 1733619112    -- the only user whose script replies "yes mama?"
+local DADA_USER_ID = 8051317045         -- types .f -> "im here dada"; types .i -> "geeg"
 
 -- .h offset: 0.5 stud down (waist), 2 studs forward (back to them)
 local HOLD_OFFSET = CFrame.new(0, -0.5, -2)
@@ -508,10 +501,14 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 
 	local text = message.Text:lower()
 
-	-- .i : respond "yes mama?" only if 8147002194 typed it AND we are 1733619112
+	-- .i : respond with the right message based on sender
 	if text == ".i" then
-		if shouldRespondYesMama(senderId) then
+		if senderId == MOMMY_USER_ID and localPlayer.UserId == RESPONDER_USER_ID then
+			-- 8147002194 typed .i and WE are 1733619112
 			sendChatMessage("yes mama?", true)
+		elseif senderId == DADA_USER_ID then
+			-- 8051317045 typed .i
+			sendChatMessage("geeg", true)
 		end
 		return
 	end
@@ -571,8 +568,13 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 	if not targetPlayer then return end
 
 	if text == ".f" then
-		-- "yes mama?" only if 8147002194 typed it AND we are 1733619112
-		local reply = shouldRespondYesMama(senderId) and "yes mama?" or nil
+		-- Pick the reply message based on sender
+		local reply = nil
+		if senderId == MOMMY_USER_ID and localPlayer.UserId == RESPONDER_USER_ID then
+			reply = "yes mama?"      -- 8147002194 typed, we are 1733619112
+		elseif senderId == DADA_USER_ID then
+			reply = "im here dada"   -- 8051317045 typed
+		end
 		teleportTo(targetPlayer, reply)
 	elseif text == ".h" then
 		if holdTarget ~= nil and targetPlayer == holdTarget then
