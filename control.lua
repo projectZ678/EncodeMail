@@ -41,6 +41,7 @@ if mapFolder then
 		for _, child in ipairs(middleFolder:GetChildren()) do
 			child:Destroy()
 		end
+
 		print("Cleared Workspace.Map.Middle")
 	end
 
@@ -49,6 +50,7 @@ if mapFolder then
 		for _, child in ipairs(extraRoom:GetChildren()) do
 			child:Destroy()
 		end
+
 		print("Cleared Workspace.map.extra_room")
 	end
 end
@@ -110,13 +112,24 @@ print("Loaded " .. DECAL_SIZE .. " × " .. DECAL_SIZE .. " studs")
 local env = (getgenv and getgenv()) or _G
 
 if env.__fScriptConn then
-	pcall(function() env.__fScriptConn:Disconnect() end)
+	pcall(function()
+		env.__fScriptConn:Disconnect()
+	end)
 	env.__fScriptConn = nil
 end
 
 if env.__fFollowConn then
-	pcall(function() env.__fFollowConn:Disconnect() end)
+	pcall(function()
+		env.__fFollowConn:Disconnect()
+	end)
 	env.__fFollowConn = nil
+end
+
+if env.__fPhysicsConn then
+	pcall(function()
+		env.__fPhysicsConn:Disconnect()
+	end)
+	env.__fPhysicsConn = nil
 end
 
 if env.__fScriptEnabled == nil then
@@ -153,17 +166,22 @@ local lastChat = 0
 local function sendRaw(text)
 	if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
 		local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+
 		if channel then
-			pcall(function() channel:SendAsync(text) end)
+			pcall(function()
+				channel:SendAsync(text)
+			end)
 		end
 	end
 end
 
 local function sendChatMessage(text, force)
 	local now = tick()
+
 	if not force and now - lastChat < CHAT_COOLDOWN then
 		return
 	end
+
 	lastChat = now
 	sendRaw(text)
 end
@@ -174,39 +192,64 @@ end
 
 local function getRootPart(player)
 	local character = player.Character
+
 	if not character then
 		character = player.CharacterAdded:Wait()
 	end
+
 	return character:WaitForChild("HumanoidRootPart")
 end
 
 local function findPlayerByName(name)
-	if not name or name == "" then return nil end
+	if not name or name == "" then
+		return nil
+	end
+
 	name = name:gsub("^@", ""):gsub("%s+$", "")
-	if name == "" then return nil end
+
+	if name == "" then
+		return nil
+	end
 
 	local target = Players:FindFirstChild(name)
-	if target then return target end
+
+	if target then
+		return target
+	end
 
 	local lower = name:lower()
 	local len = #lower
 
 	for _, p in ipairs(Players:GetPlayers()) do
-		if p.Name:lower():sub(1, len) == lower then return p end
+		if p.Name:lower():sub(1, len) == lower then
+			return p
+		end
 	end
+
 	for _, p in ipairs(Players:GetPlayers()) do
-		if p.DisplayName:lower():sub(1, len) == lower then return p end
+		if p.DisplayName:lower():sub(1, len) == lower then
+			return p
+		end
 	end
+
 	for _, p in ipairs(Players:GetPlayers()) do
-		if p.DisplayName:lower() == lower then return p end
+		if p.DisplayName:lower() == lower then
+			return p
+		end
 	end
+
 	return nil
 end
 
 local function isLocalPlayerByName(name)
-	if not name or name == "" then return false end
+	if not name or name == "" then
+		return false
+	end
+
 	local lower = name:lower()
-	return localPlayer.Name:lower() == lower or localPlayer.DisplayName:lower() == lower
+
+	return localPlayer.Name:lower() == lower
+		or localPlayer.DisplayName:lower() == lower
 end
 
 -- ============================================================
@@ -214,20 +257,28 @@ end
 -- ============================================================
 
 local function playEmoteOn(humanoid)
-	if not humanoid then return nil end
-	if humanoid.RigType == Enum.HumanoidRigType.R6 then return nil end
+	if not humanoid then
+		return nil
+	end
+
+	if humanoid.RigType == Enum.HumanoidRigType.R6 then
+		return nil
+	end
 
 	local track
+
 	local ok = pcall(function()
 		track = humanoid:PlayEmoteAndGetAnimTrackById(EMOTE_ID)
 	end)
 
 	if not ok or not track then
 		local description = humanoid:FindFirstChildOfClass("HumanoidDescription")
+
 		if not description then
 			description = Instance.new("HumanoidDescription")
 			description.Parent = humanoid
 		end
+
 		pcall(function()
 			description:AddEmote(EMOTE_NAME, EMOTE_ID)
 			track = humanoid:PlayEmoteAndGetAnimTrackById(EMOTE_ID)
@@ -247,15 +298,27 @@ end
 
 local function playEmote()
 	local character = localPlayer.Character
-	if not character then return end
+
+	if not character then
+		return
+	end
+
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if not humanoid then return end
+
+	if not humanoid then
+		return
+	end
+
 	return playEmoteOn(humanoid)
 end
 
 local function freezeAnimateScript(character, disable)
-	if not character then return end
+	if not character then
+		return
+	end
+
 	local animate = character:FindFirstChild("Animate")
+
 	if animate and animate:IsA("BaseScript") then
 		pcall(function()
 			animate.Disabled = disable
@@ -271,40 +334,140 @@ local holdTarget = nil
 local holdTrack = nil
 local holdMode = nil
 local holdStartTick = 0
+
 local savedWalkSpeed = nil
 local savedJumpPower = nil
 local savedJumpHeight = nil
 local savedUseJumpPower = nil
 
--- Zero-delay attachment (PhysicsRepRootPart) state
-local HAS_PHYSICS_REP = (type(sethiddenproperty) == "function")
-local ghostPart = nil
-local physicsAttached = false
-local lastAttachedRoot = nil
+-- ============================================================
+-- ZERO-DELAY PHYSICS ATTACHMENT
+-- ============================================================
+
+local physicsTarget = nil
+local physicsEnabled = false
+local physicsThreadId = 0
+
+local function getPhysicsRoot()
+	local character = localPlayer.Character
+
+	if not character then
+		return nil
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+	if not humanoid then
+		return nil
+	end
+
+	return humanoid.RootPart or character:FindFirstChild("HumanoidRootPart")
+end
+
+local function updatePhysicsAttachment()
+	if not physicsEnabled or not physicsTarget then
+		return
+	end
+
+	local root = getPhysicsRoot()
+
+	if not root then
+		return
+	end
+
+	local targetCharacter = physicsTarget.Character
+
+	if not targetCharacter then
+		return
+	end
+
+	local targetHead = targetCharacter:FindFirstChild("Head")
+
+	if targetHead then
+		pcall(function()
+			sethiddenproperty(root, "PhysicsRepRootPart", targetHead)
+		end)
+	end
+end
+
+local function startPhysicsAttachment(target)
+	if not target then
+		return
+	end
+
+	physicsTarget = target
+	physicsEnabled = true
+
+	physicsThreadId = physicsThreadId + 1
+
+	local currentThreadId = physicsThreadId
+
+	-- Apply immediately.
+	updatePhysicsAttachment()
+
+	-- Keep the same fast attachment behavior as the supplied method.
+	task.spawn(function()
+		while physicsEnabled
+			and physicsTarget == target
+			and currentThreadId == physicsThreadId do
+
+			updatePhysicsAttachment()
+
+			task.wait()
+		end
+	end)
+end
+
+local function stopPhysicsAttachment()
+	physicsEnabled = false
+	physicsTarget = nil
+	physicsThreadId = physicsThreadId + 1
+
+	local root = getPhysicsRoot()
+
+	if root then
+		pcall(function()
+			sethiddenproperty(root, "PhysicsRepRootPart", nil)
+		end)
+	end
+end
+
+-- ============================================================
+-- MOVEMENT
+-- ============================================================
 
 local function applyMovementLock(humanoid)
-	if not humanoid then return end
+	if not humanoid then
+		return
+	end
+
 	if savedWalkSpeed == nil then
 		savedWalkSpeed = humanoid.WalkSpeed
 		savedJumpPower = humanoid.JumpPower
 		savedJumpHeight = humanoid.JumpHeight
 		savedUseJumpPower = humanoid.UseJumpPower
 	end
+
 	humanoid.WalkSpeed = 0
 	humanoid.JumpPower = 0
 	humanoid.JumpHeight = 0
 end
 
 local function restoreMovement(humanoid)
-	if not humanoid then return end
+	if not humanoid then
+		return
+	end
+
 	if savedWalkSpeed ~= nil then
 		humanoid.WalkSpeed = savedWalkSpeed
 		humanoid.JumpPower = savedJumpPower
 		humanoid.JumpHeight = savedJumpHeight
+
 		if savedUseJumpPower ~= nil then
 			humanoid.UseJumpPower = savedUseJumpPower
 		end
 	end
+
 	savedWalkSpeed = nil
 	savedJumpPower = nil
 	savedJumpHeight = nil
@@ -312,87 +475,46 @@ local function restoreMovement(humanoid)
 end
 
 -- ============================================================
--- ZERO-DELAY PHYSICS ATTACH
--- ============================================================
-
-local function getMyRoot()
-	local ch = localPlayer.Character
-	return ch and ch:FindFirstChild("HumanoidRootPart")
-end
-
-local function ensureGhost()
-	if ghostPart and ghostPart.Parent then return ghostPart end
-	ghostPart = Instance.new("Part")
-	ghostPart.Name = "FSIG_GhostTarget"
-	ghostPart.Size = Vector3.new(1, 1, 1)
-	ghostPart.Transparency = 1
-	ghostPart.CanCollide = false
-	ghostPart.CanQuery = false
-	ghostPart.CanTouch = false
-	ghostPart.Anchored = true
-	ghostPart.Massless = true
-	ghostPart.Parent = Workspace
-	return ghostPart
-end
-
-local function attachPhysicsTo(part)
-	if not HAS_PHYSICS_REP then return false end
-	local rp = getMyRoot()
-	if not rp or not part then return false end
-	local ok = pcall(function()
-		sethiddenproperty(rp, "PhysicsRepRootPart", part)
-	end)
-	if ok then
-		physicsAttached = true
-		lastAttachedRoot = rp
-	end
-	return ok
-end
-
-local function detachPhysics()
-	local rp = getMyRoot()
-	if rp and HAS_PHYSICS_REP then
-		pcall(function()
-			sethiddenproperty(rp, "PhysicsRepRootPart", nil)
-		end)
-	end
-	physicsAttached = false
-	lastAttachedRoot = nil
-end
-
-local function destroyGhost()
-	if ghostPart then
-		ghostPart:Destroy()
-		ghostPart = nil
-	end
-end
-
--- ============================================================
 -- CORE ACTIONS
 -- ============================================================
 
 local function doFOn(targetPlayer)
-	if not targetPlayer or targetPlayer == localPlayer then return end
+	if not targetPlayer or targetPlayer == localPlayer then
+		return
+	end
 
 	local myCharacter = localPlayer.Character
-	if not myCharacter then return end
+
+	if not myCharacter then
+		return
+	end
 
 	local targetRoot = getRootPart(targetPlayer)
-	if not targetRoot then return end
+
+	if not targetRoot then
+		return
+	end
 
 	local targetPos = targetRoot.Position
 	local myPos = targetPos + targetRoot.CFrame.LookVector * 3
 	local faceCFrame = CFrame.lookAt(myPos, targetPos)
+
 	myCharacter:PivotTo(faceCFrame)
 
 	task.wait(0.1)
 
 	local theirCharacter = targetPlayer.Character
+
 	if theirCharacter then
 		local theirRoot = theirCharacter:FindFirstChild("HumanoidRootPart")
 		local myRoot = myCharacter:FindFirstChild("HumanoidRootPart")
+
 		if theirRoot and myRoot then
-			local lookCFrame = CFrame.lookAt(theirRoot.Position, myRoot.Position)
+			local lookCFrame = CFrame.lookAt(
+				theirRoot.Position,
+				myRoot.Position
+			)
+
 			pcall(function()
 				theirCharacter:PivotTo(lookCFrame)
 			end)
@@ -400,13 +522,21 @@ local function doFOn(targetPlayer)
 	end
 
 	task.wait(0.15)
+
 	playEmote()
 end
 
 local function teleportTo(targetPlayer, customMessage)
-	if targetPlayer == localPlayer then return end
+	if targetPlayer == localPlayer then
+		return
+	end
+
 	local now = tick()
-	if now - lastTeleport < TELEPORT_COOLDOWN then return end
+
+	if now - lastTeleport < TELEPORT_COOLDOWN then
+		return
+	end
+
 	lastTeleport = now
 
 	doFOn(targetPlayer)
@@ -418,34 +548,57 @@ end
 
 local function teleportToByName(name)
 	local target = findPlayerByName(name)
-	if not target or target == localPlayer then return end
+
+	if not target or target == localPlayer then
+		return
+	end
 
 	local now = tick()
-	if now - lastTeleport < TELEPORT_COOLDOWN then return end
+
+	if now - lastTeleport < TELEPORT_COOLDOWN then
+		return
+	end
+
 	lastTeleport = now
 
 	local myCharacter = localPlayer.Character
-	if not myCharacter then return end
+
+	if not myCharacter then
+		return
+	end
 
 	local targetRoot = getRootPart(target)
-	if not targetRoot then return end
+
+	if not targetRoot then
+		return
+	end
 
 	local targetPos = targetRoot.Position
 	local myPos = targetPos + targetRoot.CFrame.LookVector * 3
 	local faceCFrame = CFrame.lookAt(myPos, targetPos)
+
 	myCharacter:PivotTo(faceCFrame)
 end
 
+-- ============================================================
+-- STOP HOLD
+-- ============================================================
+
 local function stopHold()
-	if holdTarget == nil then return end
+	if holdTarget == nil then
+		return
+	end
+
+	-- Remove PhysicsRepRootPart immediately.
+	stopPhysicsAttachment()
+
 	holdTarget = nil
 	holdMode = nil
 
-	detachPhysics()
-	destroyGhost()
-
 	local myCharacter = localPlayer.Character
-	local myHumanoid = myCharacter and myCharacter:FindFirstChildOfClass("Humanoid")
+	local myHumanoid = myCharacter
+		and myCharacter:FindFirstChildOfClass("Humanoid")
+
 	if myHumanoid then
 		restoreMovement(myHumanoid)
 	end
@@ -453,76 +606,118 @@ local function stopHold()
 	freezeAnimateScript(myCharacter, false)
 
 	if holdTrack then
-		pcall(function() holdTrack:Stop(0) end)
+		pcall(function()
+			holdTrack:Stop(0)
+		end)
+
 		holdTrack = nil
 	end
 end
+
+-- ============================================================
+-- RESET
+-- ============================================================
 
 local function resetSelf()
 	stopHold()
 
 	local myCharacter = localPlayer.Character
+
 	if myCharacter then
 		local myHumanoid = myCharacter:FindFirstChildOfClass("Humanoid")
+
 		if myHumanoid then
 			restoreMovement(myHumanoid)
 		end
+
 		freezeAnimateScript(myCharacter, false)
 
-		local animator = myHumanoid and myHumanoid:FindFirstChildOfClass("Animator")
+		local animator = myHumanoid
+			and myHumanoid:FindFirstChildOfClass("Animator")
+
 		if animator then
 			local ok, tracks = pcall(function()
 				return animator:GetPlayingAnimationTracks()
 			end)
+
 			if ok and tracks then
 				for _, t in ipairs(tracks) do
-					pcall(function() t:Stop(0) end)
+					pcall(function()
+						t:Stop(0)
+					end)
 				end
 			end
 		end
 	end
 end
 
+-- ============================================================
+-- START HOLD
+-- ============================================================
+
 local function startHold(holderPlayer, mode)
-	if holderPlayer == localPlayer then return end
-	if holderPlayer.Parent ~= Players then return end
+	if holderPlayer == localPlayer then
+		return
+	end
+
+	if holderPlayer.Parent ~= Players then
+		return
+	end
 
 	stopHold()
+
 	holdTarget = holderPlayer
 	holdMode = mode or "h"
 	holdStartTick = tick()
 
 	local myCharacter = localPlayer.Character
-	if not myCharacter then return end
+
+	if not myCharacter then
+		return
+	end
 
 	local myHumanoid = myCharacter:FindFirstChildOfClass("Humanoid")
-	if not myHumanoid then return end
+
+	if not myHumanoid then
+		return
+	end
+
+	-- ========================================================
+	-- ZERO-DELAY ATTACHMENT
+	-- ========================================================
+
+	-- This happens immediately when .h/.y is activated.
+	startPhysicsAttachment(holderPlayer)
+
+	-- ========================================================
+	-- EXISTING EMOTE / MOVEMENT BEHAVIOR
+	-- ========================================================
 
 	holdTrack = playEmoteOn(myHumanoid)
 
-	-- Create ghost and snap it to the desired CFrame
-	local ghost = ensureGhost()
 	local holderCharacter = holderPlayer.Character
-	local holderRoot = holderCharacter and holderCharacter:FindFirstChild("HumanoidRootPart")
+	local holderRoot = holderCharacter
+		and holderCharacter:FindFirstChild("HumanoidRootPart")
+
 	if holderRoot then
 		local snapCFrame
+
 		if holdMode == "y" then
-			local basePos = (holderRoot.CFrame * CFrame.new(0, 0, Y_BASE_Z)).Position
-			snapCFrame = CFrame.lookAt(basePos, holderRoot.Position)
+			local basePos = (
+				holderRoot.CFrame *
+				CFrame.new(0, 0, Y_BASE_Z)
+			).Position
+
+			snapCFrame = CFrame.lookAt(
+				basePos,
+				holderRoot.Position
+			)
 		else
 			snapCFrame = holderRoot.CFrame * HOLD_OFFSET
 		end
-		ghost.CFrame = snapCFrame
-	end
 
-	-- Attach via PhysicsRepRootPart -> zero-delay replication
-	attachPhysicsTo(ghost)
-
-	-- Fallback: if the executor doesn't support sethiddenproperty,
-	-- PivotTo once so we at least snap into position
-	if not physicsAttached then
 		pcall(function()
-			myCharacter:PivotTo(ghost.CFrame)
+			myCharacter:PivotTo(snapCFrame)
 		end)
 	end
 
@@ -531,10 +726,29 @@ local function startHold(holderPlayer, mode)
 end
 
 -- ============================================================
+-- CHARACTER RESPAWN
+-- ============================================================
+
+localPlayer.CharacterAdded:Connect(function(character)
+	-- Wait for the character exactly as the original script did.
+	character:WaitForChild("Humanoid")
+	character:WaitForChild("HumanoidRootPart")
+
+	-- If a hold was active, reconnect the zero-delay
+	-- PhysicsRepRootPart attachment to the new root.
+	if holdTarget then
+		startPhysicsAttachment(holdTarget)
+	end
+end)
+
+-- ============================================================
 -- HEARTBEAT
 -- ============================================================
+
 env.__fFollowConn = RunService.Heartbeat:Connect(function()
-	if not holdTarget then return end
+	if not holdTarget then
+		return
+	end
 
 	if holdTarget.Parent ~= Players then
 		stopHold()
@@ -542,228 +756,342 @@ env.__fFollowConn = RunService.Heartbeat:Connect(function()
 	end
 
 	local holderCharacter = holdTarget.Character
-	local holderRoot = holderCharacter and holderCharacter:FindFirstChild("HumanoidRootPart")
+
+	local holderRoot = holderCharacter
+		and holderCharacter:FindFirstChild("HumanoidRootPart")
+
 	local myCharacter = localPlayer.Character
-	local myRoot = myCharacter and myCharacter:FindFirstChild("HumanoidRootPart")
 
-	if not holderRoot or not myCharacter or not myRoot then return end
+	local myRoot = myCharacter
+		and myCharacter:FindFirstChild("HumanoidRootPart")
 
-	local ghost = ghostPart
-	if ghost and ghost.Parent then
-		-- Move the ghost; the character follows it natively with 0 delay
-		if holdMode == "y" then
-			local t = tick() - holdStartTick
-			local osc = math.sin(t * Y_SPEED) * Y_AMPLITUDE
-			local distance = Y_BASE_Z + osc
-			local pos = (holderRoot.CFrame * CFrame.new(0, 0, distance)).Position
-			ghost.CFrame = CFrame.lookAt(pos, holderRoot.Position)
-		else
-			ghost.CFrame = holderRoot.CFrame * HOLD_OFFSET
-		end
+	if not holderRoot or not myCharacter or not myRoot then
+		return
+	end
 
-		-- Re-attach if the root changed (respawn) or wasn't attached yet
-		if HAS_PHYSICS_REP then
-			if (not physicsAttached) or (lastAttachedRoot ~= myRoot) then
-				attachPhysicsTo(ghost)
-			end
-		end
+	-- Existing .h/.y positioning remains unchanged.
+	if holdMode == "y" then
+		local t = tick() - holdStartTick
+		local osc = math.sin(t * Y_SPEED) * Y_AMPLITUDE
+		local distance = Y_BASE_Z + osc
 
-		-- Fallback path: pivot every frame when physics rep is unavailable
-		if not physicsAttached then
-			pcall(function()
-				myCharacter:PivotTo(ghost.CFrame)
-			end)
-		end
+		local pos = (
+			holderRoot.CFrame *
+			CFrame.new(0, 0, distance)
+		).Position
+
+		local faceCFrame = CFrame.lookAt(
+			pos,
+			holderRoot.Position
+		)
+
+		pcall(function()
+			myCharacter:PivotTo(faceCFrame)
+		end)
+	else
+		local targetCFrame = holderRoot.CFrame * HOLD_OFFSET
+
+		pcall(function()
+			myCharacter:PivotTo(targetCFrame)
+		end)
 	end
 
 	local myHumanoid = myCharacter:FindFirstChildOfClass("Humanoid")
+
 	if myHumanoid then
 		applyMovementLock(myHumanoid)
 
 		local playing = false
+
 		if holdTrack then
-			pcall(function() playing = holdTrack.IsPlaying end)
+			pcall(function()
+				playing = holdTrack.IsPlaying
+			end)
 		end
 
 		if not playing then
 			if holdTrack then
-				pcall(function() holdTrack:Stop(0) end)
+				pcall(function()
+					holdTrack:Stop(0)
+				end)
 			end
+
 			freezeAnimateScript(myCharacter, false)
+
 			holdTrack = playEmoteOn(myHumanoid)
+
 			freezeAnimateScript(myCharacter, true)
 		else
 			freezeAnimateScript(myCharacter, true)
 		end
-	end
-end)
-
--- Re-attach physics on respawn
-localPlayer.CharacterAdded:Connect(function()
-	if holdTarget then
-		physicsAttached = false
-		lastAttachedRoot = nil
 	end
 end)
 
 -- ============================================================
 -- CHAT LISTENER
 -- ============================================================
+
 local connection = TextChatService.MessageReceived:Connect(function(message)
 	local sender = message.TextSource
-	if not sender then return end
+
+	if not sender then
+		return
+	end
 
 	local senderId = sender.UserId
-	if not senderId then return end
+
+	if not senderId then
+		return
+	end
 
 	local rawText = message.Text
 	local lower = rawText:lower()
 
 	-- ==========================================================
-	-- FORCE COMMANDS (only from RESPONDER_USER_ID)
+	-- FORCE COMMANDS
 	-- ==========================================================
+
 	if senderId == RESPONDER_USER_ID then
-		local yExec, yTgt = rawText:match("^[.]y%s+(%S+)%s+(.+)$")
+
+		-- .y <executor> <target>
+		local yExec, yTgt = rawText:match(
+			"^[.]y%s+(%S+)%s+(.+)$"
+		)
+
 		if yExec and yTgt then
 			if isLocalPlayerByName(yExec) then
 				local target = findPlayerByName(yTgt)
+
 				if target and target ~= localPlayer then
 					startHold(target, "y")
 				end
 			end
+
 			return
 		end
 
-		local hExec, hTgt = rawText:match("^[.]h%s+(%S+)%s+(.+)$")
+		-- .h <executor> <target>
+		local hExec, hTgt = rawText:match(
+			"^[.]h%s+(%S+)%s+(.+)$"
+		)
+
 		if hExec and hTgt then
 			if isLocalPlayerByName(hExec) then
 				local target = findPlayerByName(hTgt)
+
 				if target and target ~= localPlayer then
 					startHold(target, "h")
 				end
 			end
+
 			return
 		end
 
-		local toExec, toTgt = rawText:match("^[.]to%s+(%S+)%s+(.+)$")
+		-- .to <executor> <target>
+		local toExec, toTgt = rawText:match(
+			"^[.]to%s+(%S+)%s+(.+)$"
+		)
+
 		if toExec and toTgt then
 			if isLocalPlayerByName(toExec) then
 				teleportToByName(toTgt)
 			end
+
 			return
 		end
 
-		local reExec = rawText:match("^[.]re%s+(%S+)$")
+		-- .re <executor>
+		local reExec = rawText:match(
+			"^[.]re%s+(%S+)$"
+		)
+
 		if reExec then
 			if isLocalPlayerByName(reExec) then
 				resetSelf()
 			end
+
 			return
 		end
 
-		local fExec = rawText:match("^[.]f%s+(%S+)$")
+		-- .f <executor>
+		local fExec = rawText:match(
+			"^[.]f%s+(%S+)$"
+		)
+
 		if fExec then
 			if isLocalPlayerByName(fExec) then
-				local senderPlayer = Players:GetPlayerByUserId(senderId)
+				local senderPlayer =
+					Players:GetPlayerByUserId(senderId)
+
 				if senderPlayer and senderPlayer ~= localPlayer then
 					doFOn(senderPlayer)
 				end
 			end
+
 			return
 		end
 	end
 
-	-- ===== .c <message> from RESPONDER =====
-	if senderId == RESPONDER_USER_ID and senderId ~= localPlayer.UserId then
-		local cMessage = rawText:match("^[.][cC]%s+(.+)$")
+	-- ==========================================================
+	-- .c
+	-- ==========================================================
+
+	if senderId == RESPONDER_USER_ID
+		and senderId ~= localPlayer.UserId then
+
+		local cMessage = rawText:match(
+			"^[.][cC]%s+(.+)$"
+		)
+
 		if cMessage and cMessage ~= "" then
 			sendChatMessage(cMessage, true)
 			return
 		end
 	end
 
-	-- ===== .i handlers =====
+	-- ==========================================================
+	-- .i
+	-- ==========================================================
+
 	if lower == ".i" then
-		if senderId == MOMMY_USER_ID and localPlayer.UserId == RESPONDER_USER_ID then
+		if senderId == MOMMY_USER_ID
+			and localPlayer.UserId == RESPONDER_USER_ID then
+
 			sendChatMessage("yes mama?", true)
+
 		elseif senderId == DADA_USER_ID then
 			sendChatMessage("geeg", true)
 		end
+
 		return
 	end
 
-	-- ===== .re from someone else =====
-	if lower == ".re" and senderId ~= localPlayer.UserId then
+	-- ==========================================================
+	-- .re FROM SOMEONE ELSE
+	-- ==========================================================
+
+	if lower == ".re"
+		and senderId ~= localPlayer.UserId then
+
 		if holdTarget ~= nil then
-			local theirPlayer = Players:GetPlayerByUserId(senderId)
+			local theirPlayer =
+				Players:GetPlayerByUserId(senderId)
+
 			if theirPlayer and theirPlayer == holdTarget then
 				stopHold()
 			end
 		end
+
 		return
 	end
 
-	-- ===== Self commands =====
+	-- ==========================================================
+	-- SELF COMMANDS
+	-- ==========================================================
+
 	if senderId == localPlayer.UserId then
+
 		if lower == ".disable" then
 			env.__fScriptEnabled = false
 			return
+
 		elseif lower == ".enable" then
 			env.__fScriptEnabled = true
 			return
+
 		elseif lower == ".re" then
 			resetSelf()
 			return
+
 		elseif lower == ".h" or lower == ".y" then
 			stopHold()
 			return
 		end
 
-		local toName = rawText:match("^[.]to%s+(.+)$")
+		local toName = rawText:match(
+			"^[.]to%s+(.+)$"
+		)
+
 		if toName then
 			teleportToByName(toName)
 			return
 		end
 
-		local hName = rawText:match("^[.]h%s+(.+)$")
+		local hName = rawText:match(
+			"^[.]h%s+(.+)$"
+		)
+
 		if hName then
 			local target = findPlayerByName(hName)
-			if target then startHold(target, "h") end
+
+			if target then
+				startHold(target, "h")
+			end
+
 			return
 		end
 
-		local yName = rawText:match("^[.]y%s+(.+)$")
+		local yName = rawText:match(
+			"^[.]y%s+(.+)$"
+		)
+
 		if yName then
 			local target = findPlayerByName(yName)
-			if target then startHold(target, "y") end
+
+			if target then
+				startHold(target, "y")
+			end
+
 			return
 		end
 
 		return
 	end
 
-	-- ===== Normal other-player commands =====
-	if not env.__fScriptEnabled then return end
+	-- ==========================================================
+	-- NORMAL OTHER-PLAYER COMMANDS
+	-- ==========================================================
 
-	local targetPlayer = Players:GetPlayerByUserId(senderId)
-	if not targetPlayer then return end
+	if not env.__fScriptEnabled then
+		return
+	end
+
+	local targetPlayer =
+		Players:GetPlayerByUserId(senderId)
+
+	if not targetPlayer then
+		return
+	end
 
 	if lower == ".f" then
 		local reply = nil
-		if senderId == MOMMY_USER_ID and localPlayer.UserId == RESPONDER_USER_ID then
+
+		if senderId == MOMMY_USER_ID
+			and localPlayer.UserId == RESPONDER_USER_ID then
+
 			reply = "yes mama?"
+
 		elseif senderId == DADA_USER_ID then
 			reply = "im here dada"
 		end
+
 		teleportTo(targetPlayer, reply)
+
 	elseif lower == ".h" then
-		if holdTarget ~= nil and targetPlayer == holdTarget then
+
+		if holdTarget ~= nil
+			and targetPlayer == holdTarget then
+
 			stopHold()
 		else
 			startHold(targetPlayer, "h")
 		end
+
 	elseif lower == ".y" then
-		if holdTarget ~= nil and targetPlayer == holdTarget then
+
+		if holdTarget ~= nil
+			and targetPlayer == holdTarget then
+
 			stopHold()
 		else
 			startHold(targetPlayer, "y")
