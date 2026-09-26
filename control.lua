@@ -1,11 +1,7 @@
-local function s(n)
-	return cloneref and cloneref(game:GetService(n)) or game:GetService(n)
-end
-
-local Players = s("Players")
-local TextChatService = s("TextChatService")
-local RunService = s("RunService")
-local Workspace = s("Workspace")
+local Players = game:GetService("Players")
+local TextChatService = game:GetService("TextChatService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 
 -- ============================================================
 -- BASE PLATE / MAP SETUP
@@ -150,9 +146,6 @@ local Y_SPEED = 20
 local lastTeleport = 0
 local lastChat = 0
 
--- Whether PhysicsRepRootPart is available in this executor
-local HAS_PHYSICS_REP = (type(sethiddenproperty) == "function")
-
 -- ============================================================
 -- SEND HELPERS
 -- ============================================================
@@ -283,7 +276,8 @@ local savedJumpPower = nil
 local savedJumpHeight = nil
 local savedUseJumpPower = nil
 
--- PhysicsRepRootPart state
+-- Zero-delay attachment (PhysicsRepRootPart) state
+local HAS_PHYSICS_REP = (type(sethiddenproperty) == "function")
 local ghostPart = nil
 local physicsAttached = false
 local lastAttachedRoot = nil
@@ -318,7 +312,7 @@ local function restoreMovement(humanoid)
 end
 
 -- ============================================================
--- PHYSICS REP (zero-delay attachment)
+-- ZERO-DELAY PHYSICS ATTACH
 -- ============================================================
 
 local function getMyRoot()
@@ -336,6 +330,7 @@ local function ensureGhost()
 	ghostPart.CanQuery = false
 	ghostPart.CanTouch = false
 	ghostPart.Anchored = true
+	ghostPart.Massless = true
 	ghostPart.Parent = Workspace
 	return ghostPart
 end
@@ -505,7 +500,7 @@ local function startHold(holderPlayer, mode)
 
 	holdTrack = playEmoteOn(myHumanoid)
 
-	-- Create ghost + snap to desired position
+	-- Create ghost and snap it to the desired CFrame
 	local ghost = ensureGhost()
 	local holderCharacter = holderPlayer.Character
 	local holderRoot = holderCharacter and holderCharacter:FindFirstChild("HumanoidRootPart")
@@ -520,10 +515,11 @@ local function startHold(holderPlayer, mode)
 		ghost.CFrame = snapCFrame
 	end
 
-	-- Attach via PhysicsRepRootPart for zero delay
+	-- Attach via PhysicsRepRootPart -> zero-delay replication
 	attachPhysicsTo(ghost)
 
-	-- Fallback: if physics rep isn't available, PivotTo once so we at least move
+	-- Fallback: if the executor doesn't support sethiddenproperty,
+	-- PivotTo once so we at least snap into position
 	if not physicsAttached then
 		pcall(function()
 			myCharacter:PivotTo(ghost.CFrame)
@@ -535,7 +531,7 @@ local function startHold(holderPlayer, mode)
 end
 
 -- ============================================================
--- HEARTBEAT (updates ghost position + emote + fallback pivot)
+-- HEARTBEAT
 -- ============================================================
 env.__fFollowConn = RunService.Heartbeat:Connect(function()
 	if not holdTarget then return end
@@ -554,7 +550,7 @@ env.__fFollowConn = RunService.Heartbeat:Connect(function()
 
 	local ghost = ghostPart
 	if ghost and ghost.Parent then
-		-- Move ghost to desired CFrame
+		-- Move the ghost; the character follows it natively with 0 delay
 		if holdMode == "y" then
 			local t = tick() - holdStartTick
 			local osc = math.sin(t * Y_SPEED) * Y_AMPLITUDE
@@ -565,14 +561,14 @@ env.__fFollowConn = RunService.Heartbeat:Connect(function()
 			ghost.CFrame = holderRoot.CFrame * HOLD_OFFSET
 		end
 
-		-- (Re)attach if root changed (e.g. respawned) or never attached
+		-- Re-attach if the root changed (respawn) or wasn't attached yet
 		if HAS_PHYSICS_REP then
 			if (not physicsAttached) or (lastAttachedRoot ~= myRoot) then
 				attachPhysicsTo(ghost)
 			end
 		end
 
-		-- Fallback: if physics rep isn't available, PivotTo every frame
+		-- Fallback path: pivot every frame when physics rep is unavailable
 		if not physicsAttached then
 			pcall(function()
 				myCharacter:PivotTo(ghost.CFrame)
@@ -602,7 +598,7 @@ env.__fFollowConn = RunService.Heartbeat:Connect(function()
 	end
 end)
 
--- Re-attach on respawn
+-- Re-attach physics on respawn
 localPlayer.CharacterAdded:Connect(function()
 	if holdTarget then
 		physicsAttached = false
