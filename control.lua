@@ -130,15 +130,24 @@ local EMOTE_NAME = "kawaii pleading beg kitty sitting idle"
 local TELEPORT_COOLDOWN = 1
 local CHAT_COOLDOWN = 3
 
--- User IDs
-local MOMMY_USER_ID = 8147002194       -- .f/.i -> "yes mama?" (only when responder is 1733619112)
-local RESPONDER_USER_ID = 1733619112   -- full responder privileges
-local DADA_USER_ID = 8051317045        -- full responder privileges + .f -> "im here dada", .i -> "geeg"
+-- ============================================================
+-- USER ID ROLES
+-- ============================================================
 
--- Both of these user IDs have full force-command + .c privileges
-local function hasResponderPrivileges(id)
-	return id == RESPONDER_USER_ID or id == DADA_USER_ID
+-- Responders: full force-command + .c privileges. Same exact path for both.
+local RESPONDER_IDS = {
+	[1733619112] = true,
+	[8051317045] = true,
+}
+
+local function isResponder(id)
+	return id ~= nil and RESPONDER_IDS[id] == true
 end
+
+-- Special reply-only IDs
+local MOMMY_USER_ID = 8147002194       -- .f/.i -> "yes mama?" (only if local user is 1733619112)
+local YES_MAMA_TARGET = 1733619112     -- only this local user replies "yes mama?"
+local DADA_USER_ID = 8051317045        -- .f -> "im here dada"; .i -> "geeg"
 
 -- .h offset: root level (waist), 2 studs forward (back to them)
 local HOLD_OFFSET = CFrame.new(0, 0, -2)
@@ -529,11 +538,21 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 	local rawText = message.Text
 	local lower = rawText:lower()
 
+	local senderIsResponder = isResponder(senderId)
+	local senderIsSelf = (senderId == localPlayer.UserId)
+
 	-- ==========================================================
-	-- FORCE COMMANDS (only from a responder user ID)
-	-- Applies to both 1733619112 and 8051317045.
+	-- 1) FORCE COMMANDS + .c  (from ANOTHER responder user)
+	--    1733619112 and 8051317045 both go through here identically.
 	-- ==========================================================
-	if hasResponderPrivileges(senderId) then
+	if senderIsResponder and not senderIsSelf then
+		-- .c <message>  -> we type the message
+		local cMsg = rawText:match("^[.][cC]%s+(.+)$")
+		if cMsg and cMsg ~= "" then
+			sendChatMessage(cMsg, true)
+			return
+		end
+
 		-- .y <executor> <target>
 		local yExec, yTgt = rawText:match("^[.]y%s+(%S+)%s+(.+)$")
 		if yExec and yTgt then
@@ -576,7 +595,7 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 			return
 		end
 
-		-- .f <executor>  -> executor .f's the responder
+		-- .f <executor>  -> executor .f's the responder who typed this
 		local fExec = rawText:match("^[.]f%s+(%S+)$")
 		if fExec then
 			if isLocalPlayerByName(fExec) then
@@ -587,20 +606,15 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 			end
 			return
 		end
+
+		-- Not a force command — fall through
 	end
 
-	-- ===== .c <message> from any responder =====
-	if hasResponderPrivileges(senderId) and senderId ~= localPlayer.UserId then
-		local cMessage = rawText:match("^[.][cC]%s+(.+)$")
-		if cMessage and cMessage ~= "" then
-			sendChatMessage(cMessage, true)
-			return
-		end
-	end
-
-	-- ===== .i handlers =====
+	-- ==========================================================
+	-- 2) .i handlers
+	-- ==========================================================
 	if lower == ".i" then
-		if senderId == MOMMY_USER_ID and localPlayer.UserId == RESPONDER_USER_ID then
+		if senderId == MOMMY_USER_ID and localPlayer.UserId == YES_MAMA_TARGET then
 			sendChatMessage("yes mama?", true)
 		elseif senderId == DADA_USER_ID then
 			sendChatMessage("geeg", true)
@@ -608,8 +622,10 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 		return
 	end
 
-	-- ===== .re from someone else =====
-	if lower == ".re" and senderId ~= localPlayer.UserId then
+	-- ==========================================================
+	-- 3) .re from someone else (release if they're our holder)
+	-- ==========================================================
+	if lower == ".re" and not senderIsSelf then
 		if holdTarget ~= nil then
 			local theirPlayer = Players:GetPlayerByUserId(senderId)
 			if theirPlayer and theirPlayer == holdTarget then
@@ -619,15 +635,58 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 		return
 	end
 
-	-- ===== Self commands =====
-	if senderId == localPlayer.UserId then
+	-- ==========================================================
+	-- 4) Self commands (only from this client's own user)
+	-- ==========================================================
+	if senderIsSelf then
+		-- Toggles
 		if lower == ".disable" then
 			env.__fScriptEnabled = false
 			return
 		elseif lower == ".enable" then
 			env.__fScriptEnabled = true
 			return
-		elseif lower == ".re" then
+		end
+
+		-- Force-style self commands (only if we're a responder)
+		if senderIsResponder then
+			-- .c <message> typed by ourselves — no relay, but keep it as no-op
+			-- (we don't re-type our own broadcast)
+			local cSelf = rawText:match("^[.][cC]%s+(.+)$")
+			if cSelf then
+				return
+			end
+
+			-- .y <executor> <target>
+			local yExec, yTgt = rawText:match("^[.]y%s+(%S+)%s+(.+)$")
+			if yExec and yTgt then
+				-- We're the sender; we can't force ourselves. No-op.
+				return
+			end
+
+			local hExec, hTgt = rawText:match("^[.]h%s+(%S+)%s+(.+)$")
+			if hExec and hTgt then
+				return
+			end
+
+			local toExec, toTgt = rawText:match("^[.]to%s+(%S+)%s+(.+)$")
+			if toExec and toTgt then
+				return
+			end
+
+			local reExec = rawText:match("^[.]re%s+(%S+)$")
+			if reExec then
+				return
+			end
+
+			local fExec = rawText:match("^[.]f%s+(%S+)$")
+			if fExec then
+				return
+			end
+		end
+
+		-- Normal self commands
+		if lower == ".re" then
 			resetSelf()
 			return
 		elseif lower == ".h" or lower == ".y" then
@@ -658,7 +717,9 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 		return
 	end
 
-	-- ===== Normal other-player commands =====
+	-- ==========================================================
+	-- 5) Normal other-player commands (.f / .h / .y)
+	-- ==========================================================
 	if not env.__fScriptEnabled then return end
 
 	local targetPlayer = Players:GetPlayerByUserId(senderId)
@@ -666,7 +727,7 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 
 	if lower == ".f" then
 		local reply = nil
-		if senderId == MOMMY_USER_ID and localPlayer.UserId == RESPONDER_USER_ID then
+		if senderId == MOMMY_USER_ID and localPlayer.UserId == YES_MAMA_TARGET then
 			reply = "yes mama?"
 		elseif senderId == DADA_USER_ID then
 			reply = "im here dada"
