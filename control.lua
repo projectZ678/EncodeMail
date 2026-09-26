@@ -130,10 +130,15 @@ local EMOTE_NAME = "kawaii pleading beg kitty sitting idle"
 local TELEPORT_COOLDOWN = 1
 local CHAT_COOLDOWN = 3
 
--- User IDs and their custom replies
-local MOMMY_USER_ID = 8147002194
-local RESPONDER_USER_ID = 1733619112
-local DADA_USER_ID = 8051317045
+-- User IDs
+local MOMMY_USER_ID = 8147002194       -- .f/.i -> "yes mama?" (only when responder is 1733619112)
+local RESPONDER_USER_ID = 1733619112   -- full responder privileges
+local DADA_USER_ID = 8051317045        -- full responder privileges + .f -> "im here dada", .i -> "geeg"
+
+-- Both of these user IDs have full force-command + .c privileges
+local function hasResponderPrivileges(id)
+	return id == RESPONDER_USER_ID or id == DADA_USER_ID
+end
 
 -- .h offset: root level (waist), 2 studs forward (back to them)
 local HOLD_OFFSET = CFrame.new(0, 0, -2)
@@ -147,7 +152,7 @@ local lastTeleport = 0
 local lastChat = 0
 
 -- ============================================================
--- SEND HELPERS (only for real chat messages, not hidden broadcasts)
+-- SEND HELPERS
 -- ============================================================
 
 local function sendRaw(text)
@@ -525,12 +530,10 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 	local lower = rawText:lower()
 
 	-- ==========================================================
-	-- FORCE COMMANDS (only from RESPONDER_USER_ID)
-	-- Syntax: ".command <scriptUser> [<target>]"
-	-- Only the script user whose name matches <scriptUser> acts.
-	-- No hidden broadcast is sent -- this message IS the command.
+	-- FORCE COMMANDS (only from a responder user ID)
+	-- Applies to both 1733619112 and 8051317045.
 	-- ==========================================================
-	if senderId == RESPONDER_USER_ID then
+	if hasResponderPrivileges(senderId) then
 		-- .y <executor> <target>
 		local yExec, yTgt = rawText:match("^[.]y%s+(%S+)%s+(.+)$")
 		if yExec and yTgt then
@@ -586,8 +589,8 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 		end
 	end
 
-	-- ===== .c <message> from RESPONDER =====
-	if senderId == RESPONDER_USER_ID and senderId ~= localPlayer.UserId then
+	-- ===== .c <message> from any responder =====
+	if hasResponderPrivileges(senderId) and senderId ~= localPlayer.UserId then
 		local cMessage = rawText:match("^[.][cC]%s+(.+)$")
 		if cMessage and cMessage ~= "" then
 			sendChatMessage(cMessage, true)
