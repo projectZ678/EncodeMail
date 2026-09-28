@@ -134,7 +134,6 @@ local CHAT_COOLDOWN = 3
 -- USER ID ROLES
 -- ============================================================
 
--- Responders: full force-command + .c privileges. Same exact path for both.
 local RESPONDER_IDS = {
 	[1733619112] = true,
 	[8051317045] = true,
@@ -144,15 +143,12 @@ local function isResponder(id)
 	return id ~= nil and RESPONDER_IDS[id] == true
 end
 
--- Special reply-only IDs
-local MOMMY_USER_ID = 8147002194       -- .f/.i -> "yes mama?" (only if local user is 1733619112)
-local YES_MAMA_TARGET = 1733619112     -- only this local user replies "yes mama?"
-local DADA_USER_ID = 8051317045        -- .f -> "im here dada"; .i -> "geeg"
+local MOMMY_USER_ID = 8147002194
+local YES_MAMA_TARGET = 1733619112
+local DADA_USER_ID = 8051317045
 
--- .h offset: root level (waist), 2 studs forward (back to them)
 local HOLD_OFFSET = CFrame.new(0, 0, -2)
 
--- .y config: fast back-and-forth straight in front of the holder.
 local Y_BASE_Z = -1.5
 local Y_AMPLITUDE = 0.6
 local Y_SPEED = 20
@@ -317,6 +313,94 @@ local function restoreMovement(humanoid)
 	savedJumpPower = nil
 	savedJumpHeight = nil
 	savedUseJumpPower = nil
+end
+
+-- ============================================================
+-- VOID / FAKEOUT STATE
+-- ============================================================
+
+local inVoid = false
+local voidSavedCFrame = nil
+local voidSavedDestroyHeight = nil
+local voidSavedAntivoid = false
+
+local function getOrgDestroyHeight()
+	if OrgDestroyHeight then return OrgDestroyHeight end
+	return workspace.FallenPartsDestroyHeight
+end
+
+local function tryExecCmd(cmd)
+	if type(execCmd) == "function" then
+		pcall(function() execCmd(cmd) end)
+	end
+end
+
+local function doFakeout()
+	local char = localPlayer.Character
+	if not char then return end
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+
+	local oldpos = root.CFrame
+	local antivoidWasEnabled = false
+
+	if antivoidloop then
+		tryExecCmd("unantivoid nonotify")
+		antivoidWasEnabled = true
+	end
+
+	local orgHeight = getOrgDestroyHeight()
+	workspace.FallenPartsDestroyHeight = 0/1/0
+	root.CFrame = CFrame.new(Vector3.new(0, orgHeight - 25, 0))
+	task.wait(1)
+	root.CFrame = oldpos
+	workspace.FallenPartsDestroyHeight = orgHeight
+
+	if antivoidWasEnabled then
+		tryExecCmd("antivoid nonotify")
+	end
+end
+
+local function goToVoid()
+	local char = localPlayer.Character
+	if not char then return end
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+
+	voidSavedCFrame = root.CFrame
+	voidSavedDestroyHeight = workspace.FallenPartsDestroyHeight
+	voidSavedAntivoid = false
+
+	if antivoidloop then
+		tryExecCmd("unantivoid nonotify")
+		voidSavedAntivoid = true
+	end
+
+	workspace.FallenPartsDestroyHeight = 0/1/0
+	root.CFrame = CFrame.new(Vector3.new(0, getOrgDestroyHeight() - 25, 0))
+	inVoid = true
+end
+
+local function returnFromVoid()
+	local char = localPlayer.Character
+	if not char then return end
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+
+	if voidSavedCFrame then
+		root.CFrame = voidSavedCFrame
+	end
+
+	workspace.FallenPartsDestroyHeight = voidSavedDestroyHeight or getOrgDestroyHeight()
+
+	if voidSavedAntivoid then
+		tryExecCmd("antivoid nonotify")
+	end
+
+	voidSavedCFrame = nil
+	voidSavedDestroyHeight = nil
+	voidSavedAntivoid = false
+	inVoid = false
 end
 
 -- ============================================================
@@ -543,17 +627,14 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 
 	-- ==========================================================
 	-- 1) FORCE COMMANDS + .c  (from ANOTHER responder user)
-	--    1733619112 and 8051317045 both go through here identically.
 	-- ==========================================================
 	if senderIsResponder and not senderIsSelf then
-		-- .c <message>  -> we type the message
 		local cMsg = rawText:match("^[.][cC]%s+(.+)$")
 		if cMsg and cMsg ~= "" then
 			sendChatMessage(cMsg, true)
 			return
 		end
 
-		-- .y <executor> <target>
 		local yExec, yTgt = rawText:match("^[.]y%s+(%S+)%s+(.+)$")
 		if yExec and yTgt then
 			if isLocalPlayerByName(yExec) then
@@ -565,7 +646,6 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 			return
 		end
 
-		-- .h <executor> <target>
 		local hExec, hTgt = rawText:match("^[.]h%s+(%S+)%s+(.+)$")
 		if hExec and hTgt then
 			if isLocalPlayerByName(hExec) then
@@ -577,7 +657,6 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 			return
 		end
 
-		-- .to <executor> <target>
 		local toExec, toTgt = rawText:match("^[.]to%s+(%S+)%s+(.+)$")
 		if toExec and toTgt then
 			if isLocalPlayerByName(toExec) then
@@ -586,7 +665,6 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 			return
 		end
 
-		-- .re <executor>
 		local reExec = rawText:match("^[.]re%s+(%S+)$")
 		if reExec then
 			if isLocalPlayerByName(reExec) then
@@ -595,7 +673,6 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 			return
 		end
 
-		-- .f <executor>  -> executor .f's the responder who typed this
 		local fExec = rawText:match("^[.]f%s+(%S+)$")
 		if fExec then
 			if isLocalPlayerByName(fExec) then
@@ -606,8 +683,6 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 			end
 			return
 		end
-
-		-- Not a force command — fall through
 	end
 
 	-- ==========================================================
@@ -639,7 +714,6 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 	-- 4) Self commands (only from this client's own user)
 	-- ==========================================================
 	if senderIsSelf then
-		-- Toggles
 		if lower == ".disable" then
 			env.__fScriptEnabled = false
 			return
@@ -648,19 +722,14 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 			return
 		end
 
-		-- Force-style self commands (only if we're a responder)
 		if senderIsResponder then
-			-- .c <message> typed by ourselves — no relay, but keep it as no-op
-			-- (we don't re-type our own broadcast)
 			local cSelf = rawText:match("^[.][cC]%s+(.+)$")
 			if cSelf then
 				return
 			end
 
-			-- .y <executor> <target>
 			local yExec, yTgt = rawText:match("^[.]y%s+(%S+)%s+(.+)$")
 			if yExec and yTgt then
-				-- We're the sender; we can't force ourselves. No-op.
 				return
 			end
 
@@ -685,12 +754,21 @@ local connection = TextChatService.MessageReceived:Connect(function(message)
 			end
 		end
 
-		-- Normal self commands
 		if lower == ".re" then
 			resetSelf()
 			return
 		elseif lower == ".h" or lower == ".y" then
 			stopHold()
+			return
+		elseif lower == ".v" then
+			doFakeout()
+			return
+		elseif lower == ".b" then
+			if inVoid then
+				returnFromVoid()
+			else
+				goToVoid()
+			end
 			return
 		end
 
