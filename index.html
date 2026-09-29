@@ -20,7 +20,6 @@
     color: #e8e8e8;
   }
 
-  /* ================= background ================= */
   #sky {
     position: fixed;
     inset: 0;
@@ -40,7 +39,6 @@
     );
   }
 
-  /* ================= layout ================= */
   .scroll-layer {
     position: fixed;
     inset: 0;
@@ -67,7 +65,6 @@
     gap: 1.75rem;
   }
 
-  /* ================= hero ================= */
   .hero {
     text-align: center;
     user-select: none;
@@ -81,7 +78,6 @@
     line-height: 1;
     letter-spacing: 0.01em;
 
-    /* white → pink gradient filling the letters */
     background-image: linear-gradient(
       100deg,
       #ffffff 0%,
@@ -99,7 +95,6 @@
 
     animation: sheen 8s ease-in-out infinite;
 
-    /* white-pink glow radiating outward */
     filter:
       drop-shadow(0 0 6px rgba(255, 255, 255, .55))
       drop-shadow(0 0 14px rgba(255, 138, 200, .65))
@@ -125,7 +120,6 @@
     color: rgba(255, 255, 255, .42);
   }
 
-  /* ================= menu ================= */
   .menu {
     width: min(540px, 100%);
     display: flex;
@@ -204,7 +198,6 @@
     color: #ffb8d9;
   }
 
-  /* expand animation */
   .menu-panel {
     display: grid;
     grid-template-rows: 0fr;
@@ -218,7 +211,6 @@
     min-height: 0;
   }
 
-  /* ================= code block ================= */
   .code-wrap {
     margin: 0 10px 10px;
     border-radius: 10px;
@@ -274,7 +266,6 @@
   }
   .copy-btn svg { display: block; }
 
-  /* code area */
   .code-area {
     position: relative;
     min-height: 40px;
@@ -294,7 +285,6 @@
   .code-pre .str  { color: #ffb8d9; }
   .code-pre .punc { color: #5f5f5f; }
 
-  /* Monaco container */
   .editor {
     height: 40px;
     width: 100%;
@@ -327,7 +317,6 @@
 
     <div class="menu">
 
-      <!-- =========== AntiVC =========== -->
       <div class="menu-item" data-script="antivc">
         <button class="menu-header" type="button" aria-expanded="false">
           <span class="dot" aria-hidden="true"></span>
@@ -366,7 +355,43 @@
         </div>
       </div>
 
-      <!-- add more items here with unique data-script keys -->
+      <div class="menu-item" data-script="mapflood">
+        <button class="menu-header" type="button" aria-expanded="false">
+          <span class="dot" aria-hidden="true"></span>
+          <span class="menu-name">MapFlood Script</span>
+          <span class="chev" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none"
+                 stroke="currentColor" stroke-width="2.2"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 9l6 6 6-6"/>
+            </svg>
+          </span>
+        </button>
+
+        <div class="menu-panel">
+          <div class="menu-panel-inner">
+            <div class="code-wrap">
+              <div class="code-top">
+                <span class="lang">lua</span>
+                <button class="copy-btn" type="button" data-copy="mapflood">
+                  <svg viewBox="0 0 24 24" width="10" height="10" fill="none"
+                       stroke="currentColor" stroke-width="2.2"
+                       stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2.5"/>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                  </svg>
+                  <span class="copy-label">Copy</span>
+                </button>
+              </div>
+
+              <div class="code-area" id="area-mapflood">
+                <div class="editor" id="editor-mapflood"></div>
+                <pre class="code-pre">loadstring<span class="punc">(</span>game<span class="punc">:</span>HttpGet<span class="punc">(</span><span class="str">"https://encode.lol/mapflood.lua"</span><span class="punc">))()</span></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
 
     </div>
 
@@ -376,16 +401,11 @@
 <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
 
 <script>
-/* =========================================================
-   SCRIPTS — exact strings used for the copy button
-   ========================================================= */
 const SCRIPTS = {
-  antivc: 'loadstring(game:HttpGet("https://encode.lol/antivc.lua"))()'
+  antivc: 'loadstring(game:HttpGet("https://encode.lol/antivc.lua"))()',
+  mapflood: 'loadstring(game:HttpGet("https://encode.lol/mapflood.lua"))()'
 };
 
-/* =========================================================
-   SHOOTING STAR SKY
-   ========================================================= */
 const canvas = document.getElementById('sky');
 const ctx = canvas.getContext('2d');
 
@@ -521,9 +541,6 @@ window.addEventListener('resize', resize);
 resize();
 requestAnimationFrame(loop);
 
-/* =========================================================
-   MONACO (optional)
-   ========================================================= */
 let monacoLoading = false;
 const monacoQueue = [];
 
@@ -607,9 +624,6 @@ function loadMonacoFor(container) {
   });
 }
 
-/* =========================================================
-   DROPDOWN TOGGLES
-   ========================================================= */
 document.querySelectorAll('.menu-header').forEach(header => {
   header.addEventListener('click', () => {
     const item = header.closest('.menu-item');
@@ -628,9 +642,6 @@ document.querySelectorAll('.menu-header').forEach(header => {
   });
 });
 
-/* =========================================================
-   COPY — copies exact loadstring only
-   ========================================================= */
 document.querySelectorAll('.copy-btn').forEach(btn => {
   btn.addEventListener('click', async () => {
     const key = btn.dataset.copy;
@@ -665,9 +676,6 @@ document.querySelectorAll('.copy-btn').forEach(btn => {
   });
 });
 
-/* =========================================================
-   LOCK IT DOWN
-   ========================================================= */
 document.addEventListener('contextmenu', e => e.preventDefault());
 
 document.addEventListener('keydown', e => {
