@@ -1059,11 +1059,26 @@ const ICONS = {
   identity:   '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/></svg>',
   overrides:  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10"/><path d="M18 7h2"/><circle cx="16" cy="7" r="2"/><path d="M4 17h6"/><path d="M14 17h6"/><circle cx="12" cy="17" r="2"/></svg>',
   visibility: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  size:       '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 8V4h4"/><path d="M20 8V4h-4"/><path d="M4 16v4h4"/><path d="M20 16v4h-4"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg>',
   text:       '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16"/><path d="M4 12h12"/><path d="M4 18h8"/></svg>',
+  layout:     '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>',
   colors:     '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="9" r="1.3"/><circle cx="15" cy="9" r="1.3"/><circle cx="9" cy="15" r="1.3"/></svg>',
+  effects:    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z"/><path d="M5 19h14"/></svg>',
   image:      '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M3 17l5-5 4 4 3-3 6 6"/></svg>',
-  spritesheet:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
 };
+
+const ALIGN_OPTS = [
+  { v:'', l:'— default —' },
+  { v:'left', l:'Left' },
+  { v:'center', l:'Center' },
+  { v:'right', l:'Right' },
+];
+const VALIGN_OPTS = [
+  { v:'', l:'— default —' },
+  { v:'top', l:'Top' },
+  { v:'center', l:'Center' },
+  { v:'bottom', l:'Bottom' },
+];
 
 const SECTIONS = [
   { id:'identity', title:'Identity', open:true, fields:[
@@ -1077,17 +1092,34 @@ const SECTIONS = [
     { k:'username_prefix',       l:'Prefix',            t:'text', ph:'@ ' },
   ]},
   { id:'visibility', title:'Visibility', fields:[
-    { k:'enabled',       l:'Enabled',       t:'bool' },
-    { k:'show_username', l:'Show username', t:'bool' },
+    { k:'enabled',            l:'Enabled',            t:'bool' },
+    { k:'show_display_name',  l:'Show display name',  t:'bool' },
+    { k:'show_username',      l:'Show username',      t:'bool' },
+    { k:'show_distance',      l:'Show distance',      t:'bool' },
   ]},
-  { id:'text', title:'Text &amp; Layout', fields:[
-    { k:'typing_text',    l:'Typing text',   t:'text', ph:'Owner' },
-    { k:'distance_label', l:'Distance label',t:'text', ph:'P' },
-    { k:'font',           l:'Font',          t:'select', opts:FONTS },
-    { k:'text_size',      l:'Name size',     t:'number', min:4, max:40, step:1 },
-    { k:'username_size',  l:'Username size', t:'number', min:4, max:30, step:1 },
-    { k:'nametag_width',  l:'Width',         t:'number', min:60, max:500, step:2 },
-    { k:'nametag_height', l:'Height',        t:'number', min:20, max:200, step:2 },
+  { id:'size', title:'Size', open:true, fields:[
+    { k:'nametag_width',  l:'Width',  t:'number', min:40, max:600, step:2 },
+    { k:'nametag_height', l:'Height', t:'number', min:16, max:300, step:2 },
+    { k:'_reset_size', l:'Reset size', t:'reset',
+      defaults:{ nametag_width:150, nametag_height:50 } },
+  ]},
+  { id:'text', title:'Text', fields:[
+    { k:'typing_text',    l:'Typing text',    t:'text', ph:'Owner' },
+    { k:'distance_label', l:'Distance label', t:'text', ph:'P' },
+    { k:'font',           l:'Font',           t:'select', opts:FONTS },
+    { k:'text_size',      l:'Name size',      t:'number', min:4, max:48, step:1 },
+    { k:'username_size',  l:'Username size',  t:'number', min:4, max:36, step:1 },
+    { k:'letter_spacing', l:'Letter spacing', t:'number', min:-2, max:12, step:0.5 },
+    { k:'line_gap',       l:'Name / user gap',t:'number', min:0, max:24, step:1 },
+  ]},
+  { id:'layout', title:'Layout', fields:[
+    { k:'text_align',     l:'Text align',     t:'select', opts:ALIGN_OPTS },
+    { k:'vertical_align', l:'Vertical align', t:'select', opts:VALIGN_OPTS },
+    { k:'padding_x',      l:'Padding X',      t:'number', min:0, max:40, step:1 },
+    { k:'padding_y',      l:'Padding Y',      t:'number', min:0, max:40, step:1 },
+    { k:'border_width',   l:'Border width',   t:'number', min:0, max:12, step:0.5 },
+    { k:'border_radius',  l:'Border radius',  t:'number', min:0, max:40, step:1 },
+    { k:'background_opacity', l:'BG opacity', t:'number', min:0, max:1, step:0.05 },
   ]},
   { id:'colors', title:'Colors', fields:[
     { k:'background_color',    l:'Background',    t:'color' },
@@ -1096,25 +1128,32 @@ const SECTIONS = [
     { k:'gradient_spin_color', l:'Gradient spin', t:'color' },
     { k:'text_color',          l:'Text',          t:'color' },
     { k:'username_color',      l:'Username',      t:'color' },
+    { k:'outline_color',       l:'Text outline',  t:'color' },
+    { k:'shadow_color',        l:'Shadow',        t:'color' },
+  ]},
+  { id:'effects', title:'Effects', fields:[
+    { k:'outline_width',  l:'Outline width',  t:'number', min:0, max:6, step:0.5 },
+    { k:'shadow_blur',    l:'Shadow blur',    t:'number', min:0, max:24, step:1 },
+    { k:'shadow_offset_x',l:'Shadow X',       t:'number', min:-20, max:20, step:1 },
+    { k:'shadow_offset_y',l:'Shadow Y',       t:'number', min:-20, max:20, step:1 },
+    { k:'scale',          l:'Scale',          t:'number', min:0.25, max:3, step:0.05 },
+    { k:'rotation',       l:'Rotation (°)',   t:'number', min:-45, max:45, step:1 },
+    { k:'offset_x',       l:'Offset X',       t:'number', min:-100, max:100, step:1 },
+    { k:'offset_y',       l:'Offset Y',       t:'number', min:-100, max:100, step:1 },
+    { k:'gradient_angle', l:'Gradient angle', t:'number', min:0, max:360, step:5 },
   ]},
   { id:'image', title:'Background image', fields:[
     { k:'background_image', l:'Image URL', t:'text', full:true, ph:'https://…' },
   ]},
-  { id:'spritesheet', title:'Spritesheet', fields:[
-    { k:'spritesheet_url',          l:'Spritesheet URL', t:'text', full:true, ph:'https://…' },
-    { k:'spritesheet_columns',      l:'Columns',         t:'number', min:1, max:64, step:1 },
-    { k:'spritesheet_rows',         l:'Rows',            t:'number', min:1, max:64, step:1 },
-    { k:'spritesheet_frame_width',  l:'Frame width',     t:'number', min:1, max:512, step:1 },
-    { k:'spritesheet_frame_height', l:'Frame height',    t:'number', min:1, max:512, step:1 },
-    { k:'spritesheet_frame_time',   l:'Frame time (s)',  t:'number', min:0.01, max:5, step:0.01 },
-  ]},
 ];
 
-const ALL_FIELDS = SECTIONS.flatMap(s => s.fields);
+const ALL_FIELDS = SECTIONS.flatMap(s => s.fields).filter(f => f.t !== 'reset');
 const ALL_KEYS   = ALL_FIELDS.map(f => f.k);
 const NUM_KEYS   = new Set(ALL_FIELDS.filter(f => f.t === 'number').map(f => f.k));
 const BOOL_KEYS  = new Set(ALL_FIELDS.filter(f => f.t === 'bool').map(f => f.k));
 const PK = 'user_id';
+
+const DEFAULT_SIZE = { nametag_width:150, nametag_height:50 };
 
 
 const state = {
@@ -1185,17 +1224,9 @@ function isValidUserRow(row){
   const id = num(row[PK]);
   if(!id || isNaN(id) || id <= 0) return false;
   // Only keep rows that actually have data (not just a bare user_id)
-  const meaningful = [
-    'username','display_name','display_name_override','username_override',
-    'typing_text','distance_label','username_prefix','background_image',
-    'background_color','border_color','gradient_color','gradient_spin_color',
-    'text_color','username_color','font','text_size','username_size',
-    'nametag_width','nametag_height','spritesheet_url',
-    'spritesheet_columns','spritesheet_rows','spritesheet_frame_width',
-    'spritesheet_frame_height','spritesheet_frame_time',
-  ];
-  for(const k of meaningful){
-    const v = row[k];
+  const skip = new Set([PK, 'updated_at', 'enabled', 'show_username', 'show_display_name', 'show_distance']);
+  for(const [k, v] of Object.entries(row)){
+    if(skip.has(k)) continue;
     if(v !== null && v !== undefined && String(v).trim() !== '') return true;
   }
   if(row.enabled === true) return true;
@@ -1363,6 +1394,8 @@ function normalize(row){
   state.knownKeys.forEach(k => d[k] = row[k] === undefined ? null : row[k]);
   if(d.enabled == null) d.enabled = true;
   if(d.show_username == null) d.show_username = true;
+  if(d.show_display_name == null) d.show_display_name = true;
+  if(d.show_distance == null) d.show_distance = false;
   return d;
 }
 function newRow(){
@@ -1370,9 +1403,12 @@ function newRow(){
   const d = {};
   state.knownKeys.forEach(k => d[k] = null);
   Object.assign(d, {
-    enabled:true, show_username:true,
+    enabled:true, show_username:true, show_display_name:true, show_distance:false,
     nametag_width:150, nametag_height:50,
     text_size:14, username_size:11,
+    border_width:1, border_radius:8, background_opacity:0.95,
+    text_align:'center', vertical_align:'center',
+    scale:1, padding_x:6, padding_y:4, line_gap:2,
   });
   state.draft = d;
   state.selectedId = null;
@@ -1495,8 +1531,25 @@ function buildSection(sec, draft){
 }
 
 function buildField(f, draft){
-  const isFull = f.full || f.t === 'bool' || f.t === 'color';
+  const isFull = f.full || f.t === 'bool' || f.t === 'color' || f.t === 'reset';
   const wrap = el('div', 'field' + (isFull ? ' full' : ''));
+
+  if(f.t === 'reset'){
+    const btn = el('button', 'sm', f.l || 'Reset');
+    btn.type = 'button';
+    btn.style.width = '100%';
+    btn.onclick = () => {
+      const defs = f.defaults || DEFAULT_SIZE;
+      Object.entries(defs).forEach(([k, v]) => { draft[k] = v; });
+      markDirty();
+      renderEditor();
+      renderPreview();
+      toast('Size reset to default', 'ok');
+    };
+    wrap.appendChild(btn);
+    return wrap;
+  }
+
   const label = el('label');
   label.appendChild(el('span', null, f.l));
   const valSpan = el('span', 'val');
@@ -1676,12 +1729,21 @@ function renderPreview(){
 
   const W = num(d.nametag_width) || 150;
   const H = num(d.nametag_height) || 50;
-  const scale = Math.min(2.1, 280 / W, 160 / H);
+  const userScale = num(d.scale) || 1;
+  const viewScale = Math.min(2.1, 280 / (W * userScale), 160 / (H * userScale));
+  const s = viewScale * userScale;
 
   const stage = el('div', 'stage-preview');
   const wrap = el('div', 'tag-wrap');
-  wrap.style.width = (W * scale) + 'px';
-  wrap.style.height = (H * scale) + 'px';
+  wrap.style.width = (W * viewScale) + 'px';
+  wrap.style.height = (H * viewScale) + 'px';
+
+  const rot = num(d.rotation) || 0;
+  const ox = (num(d.offset_x) || 0) * viewScale;
+  const oy = (num(d.offset_y) || 0) * viewScale;
+  if(rot || ox || oy){
+    wrap.style.transform = `translate(${ox}px, ${oy}px) rotate(${rot}deg)`;
+  }
 
   const spin = !!(d.gradient_color && d.gradient_spin_color);
   if(spin){
@@ -1693,16 +1755,51 @@ function renderPreview(){
     wrap.style.setProperty('--c2', bc);
   }
 
+  const bw = num(d.border_width);
+  if(bw != null && bw >= 0){
+    // border is simulated by the spinning ring thickness via padding on wrap is complex;
+    // apply solid border on tag when not spinning
+    if(!spin){
+      wrap.style.boxShadow = `0 0 0 ${Math.max(1, bw * viewScale)}px ${normHex(d.border_color) || '#222'}`;
+    }
+  }
+
   const tag = el('div', 'tag');
-  tag.style.background = normHex(d.background_color) || 'rgba(28,28,28,.95)';
+  const br = num(d.border_radius);
+  if(br != null){
+    tag.style.borderRadius = (br * viewScale) + 'px';
+    wrap.style.borderRadius = ((br + 2) * viewScale) + 'px';
+  }
+
+  const bgHex = normHex(d.background_color);
+  const bgOp = num(d.background_opacity);
+  if(bgHex){
+    const [r,g,b] = hexToRgb(bgHex);
+    const a = (bgOp != null ? bgOp : 0.95);
+    tag.style.background = `rgba(${r},${g},${b},${a})`;
+  } else {
+    tag.style.background = `rgba(28,28,28,${bgOp != null ? bgOp : 0.95})`;
+  }
+
+  const px = num(d.padding_x);
+  const py = num(d.padding_y);
+  if(px != null || py != null){
+    tag.style.padding = `${(py != null ? py : 4) * viewScale}px ${(px != null ? px : 6) * viewScale}px`;
+  }
+
+  const align = d.text_align || 'center';
+  const valign = d.vertical_align || 'center';
+  tag.style.alignItems = align === 'left' ? 'flex-start' : align === 'right' ? 'flex-end' : 'center';
+  tag.style.justifyContent = valign === 'top' ? 'flex-start' : valign === 'bottom' ? 'flex-end' : 'center';
+  tag.style.textAlign = align;
 
   const bgUrl = (d.background_image || '').trim();
   if(bgUrl){
     const bg = el('div', 'tag-bg');
     bg.style.backgroundImage = `url("${bgUrl}")`;
+    if(br != null) bg.style.borderRadius = 'inherit';
     tag.appendChild(bg);
   }
-
 
   const profile = state.profileCache[d[PK]] || {};
 
@@ -1718,14 +1815,42 @@ function renderPreview(){
     (nonEmpty(profile.username) && profile.username) ||
     null;
 
-  if(displayName || d.typing_text){
+  const ls = num(d.letter_spacing);
+  const gap = num(d.line_gap);
+  const outlineW = num(d.outline_width) || 0;
+  const outlineC = normHex(d.outline_color) || '#000';
+  const shC = normHex(d.shadow_color);
+  const shB = num(d.shadow_blur) || 0;
+  const shX = num(d.shadow_offset_x) || 0;
+  const shY = num(d.shadow_offset_y) || 0;
+
+  const applyTextFx = (node) => {
+    if(ls != null) node.style.letterSpacing = (ls * viewScale * 0.15) + 'px';
+    const shadows = [];
+    if(outlineW > 0){
+      // simple outline via stacked shadows
+      const o = outlineW * viewScale * 0.4;
+      shadows.push(
+        `${-o}px ${-o}px 0 ${outlineC}`, `${o}px ${-o}px 0 ${outlineC}`,
+        `${-o}px ${o}px 0 ${outlineC}`, `${o}px ${o}px 0 ${outlineC}`
+      );
+    }
+    if(shC && (shB || shX || shY)){
+      shadows.push(`${shX * viewScale * 0.4}px ${shY * viewScale * 0.4}px ${shB * viewScale * 0.4}px ${shC}`);
+    }
+    if(shadows.length) node.style.textShadow = shadows.join(', ');
+  };
+
+  if(d.show_display_name !== false && (displayName || d.typing_text)){
     let text = displayName || '';
     if(d.typing_text) text = (text ? text + '  ' : '') + d.typing_text;
     if(text){
       const n = el('div', 'tag-name', text);
       n.style.color = normHex(d.text_color) || '#f2f2f2';
-      n.style.fontSize = Math.max(7, (num(d.text_size) || 14) * scale * .72) + 'px';
+      n.style.fontSize = Math.max(7, (num(d.text_size) || 14) * s * .72) + 'px';
       if(d.font) n.style.fontFamily = `"${d.font}", sans-serif`;
+      if(gap != null) n.style.marginBottom = (gap * viewScale * 0.4) + 'px';
+      applyTextFx(n);
       tag.appendChild(n);
     }
   }
@@ -1736,9 +1861,18 @@ function renderPreview(){
     if(!u.startsWith('@') && !u.startsWith(prefix)) u = prefix + u;
     const ul = el('div', 'tag-user', u);
     ul.style.color = normHex(d.username_color) || '#8a8a8a';
-    ul.style.fontSize = Math.max(6, (num(d.username_size) || 11) * scale * .72) + 'px';
+    ul.style.fontSize = Math.max(6, (num(d.username_size) || 11) * s * .72) + 'px';
     if(d.font) ul.style.fontFamily = `"${d.font}", sans-serif`;
+    applyTextFx(ul);
     tag.appendChild(ul);
+  }
+
+  if(d.show_distance && nonEmpty(d.distance_label)){
+    const dl = el('div', 'tag-user', d.distance_label);
+    dl.style.color = normHex(d.username_color) || '#8a8a8a';
+    dl.style.fontSize = Math.max(5, (num(d.username_size) || 11) * s * .55) + 'px';
+    if(d.font) dl.style.fontFamily = `"${d.font}", sans-serif`;
+    tag.appendChild(dl);
   }
 
   wrap.appendChild(tag);
@@ -1748,9 +1882,9 @@ function renderPreview(){
   const meta = el('div', 'preview-meta');
   const rows = [
     ['size', `${W} × ${H}`],
+    ['scale', String(userScale)],
     ['border', spin ? 'animated gradient' : 'solid'],
     ['image', bgUrl ? 'static image' : 'none'],
-    ['effect', d.typing_text ? 'typing' : 'none'],
     ['font', d.font || 'default'],
   ];
   rows.forEach(([k, v]) => {
