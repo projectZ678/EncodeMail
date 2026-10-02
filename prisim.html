@@ -1086,7 +1086,7 @@ const ICONS = {
   colors:     '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="9" r="1.3"/><circle cx="15" cy="9" r="1.3"/><circle cx="9" cy="15" r="1.3"/></svg>',
   effects:    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z"/><path d="M5 19h14"/></svg>',
   image:      '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M3 17l5-5 4 4 3-3 6 6"/></svg>',
-  spritesheet:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
+  frames:     '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="6" width="12" height="12" rx="1"/><rect x="10" y="3" width="12" height="12" rx="1"/><path d="M16 12h4"/><path d="M18 10v4"/></svg>',
 };
 
 const ALIGN_OPTS = [
@@ -1167,13 +1167,12 @@ const SECTIONS = [
   { id:'image', title:'Background image', fields:[
     { k:'background_image', l:'Image URL', t:'text', full:true, ph:'https://…' },
   ]},
-  { id:'spritesheet', title:'Spritesheet', fields:[
-    { k:'spritesheet_url',          l:'Sheet URL',     t:'text', full:true, ph:'https://…' },
-    { k:'spritesheet_columns',      l:'Columns',       t:'number', min:1, max:64, step:1 },
-    { k:'spritesheet_rows',         l:'Rows',          t:'number', min:1, max:64, step:1 },
-    { k:'spritesheet_frame_width',  l:'Frame width',   t:'number', min:1, max:1024, step:1 },
-    { k:'spritesheet_frame_height', l:'Frame height',  t:'number', min:1, max:1024, step:1 },
-    { k:'spritesheet_frame_time',   l:'Frame time (s)',t:'number', min:0.02, max:2, step:0.01 },
+  { id:'frames', title:'Frame animation', fields:[
+    { k:'frame_urls', l:'Frame URLs', t:'textarea', full:true,
+      ph:'One image URL per line\nhttps://…/frame_1.png\nhttps://…/frame_2.png' },
+    { k:'frame_folder', l:'Or GitHub folder link', t:'text', full:true,
+      ph:'https://github.com/user/repo/tree/main/frames' },
+    { k:'frame_time',  l:'Frame time (s)', t:'number', min:0.02, max:2, step:0.01 },
   ]},
 ];
 
@@ -1561,7 +1560,7 @@ function buildSection(sec, draft){
 }
 
 function buildField(f, draft){
-  const isFull = f.full || f.t === 'bool' || f.t === 'color' || f.t === 'reset';
+  const isFull = f.full || f.t === 'bool' || f.t === 'color' || f.t === 'reset' || f.t === 'textarea';
   const wrap = el('div', 'field' + (isFull ? ' full' : ''));
 
   if(f.t === 'reset'){
@@ -1706,6 +1705,23 @@ function buildField(f, draft){
     return wrap;
   }
 
+  if(f.t === 'textarea'){
+    const ta = document.createElement('textarea');
+    ta.rows = 5;
+    ta.spellcheck = false;
+    if(f.ph) ta.placeholder = f.ph;
+    ta.value = draft[f.k] ?? '';
+    ta.style.minHeight = '88px';
+    ta.style.lineHeight = '1.45';
+    ta.oninput = () => {
+      const v = ta.value;
+      set(v === '' ? null : v);
+    };
+    wrap.appendChild(ta);
+    if(f.hint) wrap.appendChild(el('div', 'hint', f.hint));
+    return wrap;
+  }
+
   const inp = document.createElement('input');
   inp.type = f.t === 'number' ? 'number' : 'text';
   if(f.step) inp.step = f.step;
@@ -1746,278 +1762,200 @@ async function saveCurrent(){
 }
 
 
-/* ── Spritesheet player (auto-fit grid, frame-by-frame on nametag) ── */
-const sheetCache = Object.create(null); // url -> HTMLImageElement | { loading }
-let sheetAnimToken = 0;
+/* ── Frame-by-frame animation (URL list or numbered sequence) ── */
+const frameImgCache = Object.create(null); // url -> HTMLImageElement | { loading }
+let frameAnimToken = 0;
 
-function loadSheetImage(url){
-  const hit = sheetCache[url];
+function loadFrameImage(url){
+  const hit = frameImgCache[url];
   if(hit instanceof HTMLImageElement && hit.complete && hit.naturalWidth) return Promise.resolve(hit);
   if(hit && hit.loading) return hit.loading;
 
   const promise = new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      sheetCache[url] = img;
-      resolve(img);
-    };
+    img.onload = () => { frameImgCache[url] = img; resolve(img); };
     img.onerror = () => {
-      // retry without CORS (may taint canvas but still drawable for same-origin-ish cases)
       const img2 = new Image();
-      img2.onload = () => { sheetCache[url] = img2; resolve(img2); };
-      img2.onerror = () => { delete sheetCache[url]; reject(new Error('sheet load failed')); };
+      img2.onload = () => { frameImgCache[url] = img2; resolve(img2); };
+      img2.onerror = () => { delete frameImgCache[url]; reject(new Error('frame load failed')); };
       img2.src = url;
     };
     img.src = url;
   });
-  sheetCache[url] = { loading: promise };
+  frameImgCache[url] = { loading: promise };
   return promise;
 }
 
-/** Find positive integer divisors of n up to maxD */
-function divisorsOf(n, maxD){
-  const out = [];
-  const lim = Math.min(maxD || 64, n);
-  for(let i = 1; i <= lim; i++){
-    if(n % i === 0) out.push(i);
-  }
-  return out;
+/** Parse explicit frame URL list (newlines, commas, or spaces) */
+function parseFrameUrlList(text){
+  if(!text) return [];
+  return String(text)
+    .split(/[\n\r,]+/)
+    .map(s => s.trim())
+    .filter(s => s && /^https?:\/\//i.test(s));
 }
 
-/** Best column count for a 1-row horizontal strip (frame height = sheet height). */
-function bestStripCols(W, H){
-  const target = Math.max(1, Math.round(W / H));
-  const candidates = new Set([target, target - 1, target + 1, target - 2, target + 2]);
-  for(const c of divisorsOf(W, 64)){
-    if(Math.abs(c - target) <= 6) candidates.add(c);
+const IMG_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg)(\?|$)/i;
+const githubFolderCache = Object.create(null); // url -> string[] | { loading }
+
+/** Parse https://github.com/owner/repo/tree/branch/path/to/folder */
+function parseGithubFolderUrl(url){
+  if(!url) return null;
+  const u = url.trim();
+  // github.com/owner/repo/tree/branch/optional/path
+  let m = u.match(/^https?:\/\/github\.com\/([^\/]+)\/([^\/]+)\/tree\/([^\/]+)(?:\/(.*))?$/i);
+  if(m){
+    return {
+      owner: m[1],
+      repo: m[2].replace(/\.git$/i, ''),
+      branch: m[3],
+      path: (m[4] || '').replace(/\/+$/, ''),
+    };
   }
-  let bestC = Math.max(1, target);
-  let bestScore = Infinity;
-  for(const c of candidates){
-    if(c < 1 || c > 64) continue;
-    const fw = W / c;
-    if(fw < 4) continue;
-    const exact = (W % c === 0) ? 0 : 0.4;
-    const square = Math.abs(fw - H) / Math.max(fw, H);
-    const score = square + exact;
-    if(score < bestScore){ bestScore = score; bestC = c; }
+  // github.com/owner/repo/blob/branch/path (single file — treat parent folder)
+  m = u.match(/^https?:\/\/github\.com\/([^\/]+)\/([^\/]+)\/blob\/([^\/]+)\/(.+)$/i);
+  if(m){
+    const full = m[4].replace(/\/+$/, '');
+    const parts = full.split('/');
+    parts.pop();
+    return {
+      owner: m[1],
+      repo: m[2].replace(/\.git$/i, ''),
+      branch: m[3],
+      path: parts.join('/'),
+    };
   }
-  return bestC;
+  // raw.githubusercontent.com/owner/repo/branch/path — parent folder
+  m = u.match(/^https?:\/\/raw\.githubusercontent\.com\/([^\/]+)\/([^\/]+)\/([^\/]+)\/(.+)$/i);
+  if(m){
+    const parts = m[4].replace(/\/+$/, '').split('/');
+    parts.pop();
+    return {
+      owner: m[1],
+      repo: m[2].replace(/\.git$/i, ''),
+      branch: m[3],
+      path: parts.join('/'),
+    };
+  }
+  return null;
 }
 
-/** Best row count for a 1-column vertical strip (frame width = sheet width). */
-function bestStripRows(W, H){
-  const target = Math.max(1, Math.round(H / W));
-  const candidates = new Set([target, target - 1, target + 1, target - 2, target + 2]);
-  for(const r of divisorsOf(H, 64)){
-    if(Math.abs(r - target) <= 6) candidates.add(r);
-  }
-  let bestR = Math.max(1, target);
-  let bestScore = Infinity;
-  for(const r of candidates){
-    if(r < 1 || r > 64) continue;
-    const fh = H / r;
-    if(fh < 4) continue;
-    const exact = (H % r === 0) ? 0 : 0.4;
-    const square = Math.abs(fh - W) / Math.max(fh, W);
-    const score = square + exact;
-    if(score < bestScore){ bestScore = score; bestR = r; }
-  }
-  return bestR;
-}
+/** Fetch image file URLs from a GitHub folder via the Contents API */
+async function fetchGithubFolderFrames(folderUrl){
+  const key = folderUrl.trim();
+  const hit = githubFolderCache[key];
+  if(Array.isArray(hit)) return hit;
+  if(hit && hit.loading) return hit.loading;
 
-/**
- * Auto-detect frame grid. Prefers single-row horizontal or single-column vertical
- * strips so playback steps one frame at a time (not a vertical "scroll").
- */
-function autoDetectGrid(naturalW, naturalH){
-  const W = Math.max(1, naturalW|0);
-  const H = Math.max(1, naturalH|0);
-  const ratio = W / H;
+  const promise = (async () => {
+    const parsed = parseGithubFolderUrl(key);
+    if(!parsed) return [];
 
-  // Wide sheet → horizontal strip (1 row)
-  if(ratio >= 1.25){
-    const cols = bestStripCols(W, H);
-    return { cols, rows: 1, fw: Math.floor(W / cols), fh: H, total: cols, auto: true };
-  }
+    const { owner, repo, branch, path } = parsed;
+    const api = `https://api.github.com/repos/${owner}/${repo}/contents/${path ? encodeURI(path) : ''}?ref=${encodeURIComponent(branch)}`;
 
-  // Tall sheet → vertical strip (1 column)
-  if(ratio <= 0.8){
-    const rows = bestStripRows(W, H);
-    return { cols: 1, rows, fw: W, fh: Math.floor(H / rows), total: rows, auto: true };
-  }
-
-  // Near-square: grid of near-square cells only
-  const colOptions = divisorsOf(W, 32);
-  const rowOptions = divisorsOf(H, 32);
-  let best = null;
-  let bestScore = Infinity;
-  for(const cols of colOptions){
-    for(const rows of rowOptions){
-      const total = cols * rows;
-      if(total < 2 || total > 64) continue;
-      const fw = W / cols;
-      const fh = H / rows;
-      if(fw < 4 || fh < 4) continue;
-      const square = Math.abs(fw - fh) / Math.max(fw, fh);
-      if(square > 0.4) continue;
-      const score = square + (total > 36 ? (total - 36) * 0.01 : 0);
-      if(score < bestScore){
-        bestScore = score;
-        best = { cols, rows, fw: Math.floor(fw), fh: Math.floor(fh), total, auto: true };
+    try{
+      const res = await fetch(api, {
+        headers: {
+          'Accept': 'application/vnd.github+json',
+        },
+      });
+      if(!res.ok){
+        console.warn('GitHub folder fetch failed', res.status, await res.text().catch(()=>''));
+        githubFolderCache[key] = [];
+        return [];
       }
+      const data = await res.json();
+      const list = Array.isArray(data) ? data : [];
+      const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+      const urls = list
+        .filter(f => f && f.type === 'file' && f.download_url && IMG_EXT_RE.test(f.name || f.download_url))
+        .sort((a, b) => collator.compare(a.name || '', b.name || ''))
+        .map(f => f.download_url);
+      githubFolderCache[key] = urls;
+      return urls;
+    }catch(e){
+      console.warn('GitHub folder error', e);
+      githubFolderCache[key] = [];
+      return [];
     }
-  }
-  if(best) return best;
+  })();
 
-  // Fallback horizontal strip
-  const cols = bestStripCols(W, H);
-  return { cols, rows: 1, fw: Math.floor(W / cols), fh: H, total: cols, auto: true };
+  githubFolderCache[key] = { loading: promise };
+  return promise;
 }
 
-/** Resolve columns/rows/frame size from draft + natural image size (auto-fits when unset) */
-function resolveSheetGrid(d, naturalW, naturalH){
-  let cols = num(d.spritesheet_columns);
-  let rows = num(d.spritesheet_rows);
-  let fw = num(d.spritesheet_frame_width);
-  let fh = num(d.spritesheet_frame_height);
+/** Build ordered frame URL list: explicit links OR GitHub folder */
+async function collectFrameUrls(d){
+  const explicit = parseFrameUrlList(d.frame_urls);
+  // Prefer explicit multi-frame list
+  if(explicit.length >= 2) return explicit;
 
-  const hasCols = cols > 0;
-  const hasRows = rows > 0;
-  const hasFw = fw > 0;
-  const hasFh = fh > 0;
-  const ratio = naturalW / Math.max(1, naturalH);
-
-  // Nothing set → full auto-detect
-  if(!hasCols && !hasRows && !hasFw && !hasFh){
-    return autoDetectGrid(naturalW, naturalH);
-  }
-
-  // Explicit frame size → derive grid that tiles the sheet
-  if(hasFw && hasFh){
-    cols = hasCols ? cols : Math.max(1, Math.floor(naturalW / fw));
-    rows = hasRows ? rows : Math.max(1, Math.floor(naturalH / fh));
-    fw = Math.floor(naturalW / cols);
-    fh = Math.floor(naturalH / rows);
-  } else if(hasCols && hasRows){
-    fw = Math.floor(naturalW / cols);
-    fh = Math.floor(naturalH / rows);
-  } else if(hasCols){
-    fw = Math.floor(naturalW / cols);
-    if(hasFh){
-      rows = Math.max(1, Math.floor(naturalH / fh));
-    } else {
-      // wide sheets stay 1-row when only columns given
-      if(ratio >= 1.25){
-        rows = 1;
-        fh = naturalH;
-        fw = Math.floor(naturalW / cols);
-      } else {
-        rows = Math.max(1, Math.round(naturalH / fw));
-        fh = Math.floor(naturalH / rows);
-      }
-    }
-  } else if(hasRows){
-    fh = Math.floor(naturalH / rows);
-    if(hasFw){
-      cols = Math.max(1, Math.floor(naturalW / fw));
-    } else if(ratio <= 0.8){
-      cols = 1;
-      fw = naturalW;
-      fh = Math.floor(naturalH / rows);
-    } else {
-      cols = Math.max(1, Math.round(naturalW / fh));
-      fw = Math.floor(naturalW / cols);
-    }
-  } else if(hasFw){
-    cols = Math.max(1, Math.floor(naturalW / fw));
-    if(ratio >= 1.25){
-      rows = 1;
-      fh = naturalH;
-      fw = Math.floor(naturalW / cols);
-    } else {
-      rows = Math.max(1, Math.round(naturalH / fw));
-      fh = Math.floor(naturalH / rows);
-      fw = Math.floor(naturalW / cols);
-    }
-  } else if(hasFh){
-    rows = Math.max(1, Math.floor(naturalH / fh));
-    if(ratio <= 0.8){
-      cols = 1;
-      fw = naturalW;
-      fh = Math.floor(naturalH / rows);
-    } else {
-      cols = Math.max(1, Math.round(naturalW / fh));
-      fw = Math.floor(naturalW / cols);
-      fh = Math.floor(naturalH / rows);
+  const folder = (d.frame_folder || '').trim();
+  if(folder){
+    // GitHub folder link
+    if(/github\.com|raw\.githubusercontent\.com/i.test(folder)){
+      const urls = await fetchGithubFolderFrames(folder);
+      if(urls.length) return urls;
     }
   }
 
-  cols = Math.max(1, cols|0);
-  rows = Math.max(1, rows|0);
-  fw = Math.max(1, fw|0);
-  fh = Math.max(1, fh|0);
+  // Single explicit URL still usable as 1-frame
+  if(explicit.length === 1) return explicit;
 
-  // Fix bad grids that cause a vertical "scroll" on wide sheets
-  // (many thin rows instead of side-by-side frames)
-  if(ratio >= 1.25 && rows > 1 && cols <= 2){
-    return autoDetectGrid(naturalW, naturalH);
-  }
-  // Fix bad grids on tall sheets (many skinny columns)
-  if(ratio <= 0.8 && cols > 1 && rows <= 2){
-    return autoDetectGrid(naturalW, naturalH);
+  // frame_urls might itself be a github folder link
+  if(explicit.length === 0 && folder) return [];
+  const maybeGh = explicit[0] || folder;
+  if(maybeGh && /github\.com|raw\.githubusercontent\.com/i.test(maybeGh)){
+    return fetchGithubFolderFrames(maybeGh);
   }
 
-  return { cols, rows, fw, fh, total: cols * rows, auto: false };
+  return explicit;
 }
 
-function paintSheetFrame(ctx, img, frameIndex, cols, fw, fh, cw, ch){
-  const col = frameIndex % cols;
-  const row = Math.floor(frameIndex / cols);
-  const sx = col * fw;
-  const sy = row * fh;
-  // contain-fit so the full frame is visible (no crop that looks like scrolling)
+function paintFrameContain(ctx, img, cw, ch){
+  const fw = img.naturalWidth || img.width;
+  const fh = img.naturalHeight || img.height;
+  if(!fw || !fh) return;
   const scale = Math.min(cw / fw, ch / fh);
   const dw = fw * scale, dh = fh * scale;
   const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
   ctx.clearRect(0, 0, cw, ch);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(img, sx, sy, fw, fh, dx, dy, dw, dh);
+  ctx.drawImage(img, dx, dy, dw, dh);
 }
 
-function startSheetPlayer(canvas, img, grid, frameTimeMs, token){
+function startFramePlayer(canvas, images, frameTimeMs, token){
   const ctx = canvas.getContext('2d');
-  const { cols, fw, fh, total } = grid;
   let idx = 0;
   let last = performance.now();
   let acc = 0;
   const delay = Math.max(20, frameTimeMs || 100);
+  const n = images.length;
+  if(!n) return;
 
-  paintSheetFrame(ctx, img, 0, cols, fw, fh, canvas.width, canvas.height);
+  paintFrameContain(ctx, images[0], canvas.width, canvas.height);
 
   const tick = (now) => {
-    if(token !== sheetAnimToken) return;
+    if(token !== frameAnimToken) return;
     acc += now - last;
     last = now;
     let advanced = false;
     while(acc >= delay){
       acc -= delay;
-      idx = (idx + 1) % total;
+      idx = (idx + 1) % n;
       advanced = true;
     }
-    if(advanced) paintSheetFrame(ctx, img, idx, cols, fw, fh, canvas.width, canvas.height);
+    if(advanced) paintFrameContain(ctx, images[idx], canvas.width, canvas.height);
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
 }
 
-function mountSpritesheetBackground(tag, d, br, cssW, cssH){
-  const url = (d.spritesheet_url || '').trim();
-  if(!url) return false;
-
-  const token = ++sheetAnimToken;
+function mountFrameAnimation(tag, d, br, cssW, cssH){
+  const token = ++frameAnimToken;
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const canvas = document.createElement('canvas');
   canvas.className = 'tag-bg-canvas';
@@ -2026,47 +1964,42 @@ function mountSpritesheetBackground(tag, d, br, cssW, cssH){
   if(br != null) canvas.style.borderRadius = 'inherit';
   tag.appendChild(canvas);
 
-  const frameTimeSec = num(d.spritesheet_frame_time);
+  const frameTimeSec = num(d.frame_time);
   const frameTimeMs = (frameTimeSec != null && frameTimeSec > 0 ? frameTimeSec : 0.1) * 1000;
 
-  loadSheetImage(url).then(img => {
-    if(token !== sheetAnimToken) return;
-    const grid = resolveSheetGrid(d, img.naturalWidth, img.naturalHeight);
-
-    // Write detected grid into the form when auto-detected or when fixing a bad grid
-    if(grid.auto || d._sheetAutoFor !== url){
-      d._sheetAutoFor = url;
-      d.spritesheet_columns = grid.cols;
-      d.spritesheet_rows = grid.rows;
-      d.spritesheet_frame_width = grid.fw;
-      d.spritesheet_frame_height = grid.fh;
-      if(!num(d.spritesheet_frame_time)) d.spritesheet_frame_time = 0.1;
-      if(state.draft === d){
-        markDirty();
-        const open = new Set(state.openSections);
-        open.add('spritesheet');
-        state.openSections = open;
-        renderEditor();
-      }
+  collectFrameUrls(d).then(urls => {
+    if(token !== frameAnimToken) return;
+    if(!urls.length){
+      canvas.remove();
+      return;
     }
-
-    canvas.dataset.sheetMeta = `${grid.cols}×${grid.rows} · ${grid.fw}×${grid.fh}px · ${grid.total}f`;
-    // Use detected frame time if user left it empty
-    const ms = num(d.spritesheet_frame_time) > 0
-      ? num(d.spritesheet_frame_time) * 1000
-      : frameTimeMs;
-    startSheetPlayer(canvas, img, grid, ms, token);
+    canvas.dataset.frameMeta = urls.length + ' frames';
+    return Promise.all(urls.map(u => loadFrameImage(u).catch(() => null)))
+      .then(imgs => {
+        if(token !== frameAnimToken) return;
+        const ok = imgs.filter(Boolean);
+        if(!ok.length){
+          canvas.remove();
+          return;
+        }
+        if(ok.length === 1){
+          paintFrameContain(canvas.getContext('2d'), ok[0], canvas.width, canvas.height);
+          return;
+        }
+        startFramePlayer(canvas, ok, frameTimeMs, token);
+      });
   }).catch(() => {
-    if(token !== sheetAnimToken) return;
+    if(token !== frameAnimToken) return;
     canvas.remove();
-    const img = document.createElement('img');
-    img.className = 'tag-bg-img';
-    img.src = url;
-    img.alt = '';
-    if(br != null) img.style.borderRadius = 'inherit';
-    tag.insertBefore(img, tag.firstChild);
   });
+
   return true;
+}
+
+function hasFrameAnimation(d){
+  if(parseFrameUrlList(d.frame_urls).length >= 1) return true;
+  if((d.frame_folder || '').trim()) return true;
+  return false;
 }
 
 function mountStaticBackground(tag, bgUrl, br){
@@ -2091,8 +2024,8 @@ function mountStaticBackground(tag, bgUrl, br){
 function renderPreview(){
   const root = $('#previewBody');
   if(!root) return;
-  // cancel any in-flight spritesheet loop from previous preview
-  sheetAnimToken++;
+  // cancel any in-flight frame loop from previous preview
+  frameAnimToken++;
   root.innerHTML = '';
 
   const d = state.draft;
@@ -2168,12 +2101,11 @@ function renderPreview(){
   tag.style.textAlign = align;
 
   const bgUrl = (d.background_image || '').trim();
-  const sheetUrl = (d.spritesheet_url || '').trim();
   const cssW = W * viewScale;
   const cssH = H * viewScale;
-  // Spritesheet takes priority and plays frame-by-frame with auto-fit grid
-  if(sheetUrl){
-    mountSpritesheetBackground(tag, d, br, cssW, cssH);
+  // Frame animation takes priority over static background image
+  if(hasFrameAnimation(d)){
+    mountFrameAnimation(tag, d, br, cssW, cssH);
   } else if(bgUrl){
     mountStaticBackground(tag, bgUrl, br);
   }
@@ -2258,17 +2190,17 @@ function renderPreview(){
 
   const meta = el('div', 'preview-meta');
   let imageLabel = 'none';
-  if(sheetUrl){
-    const cols = num(d.spritesheet_columns);
-    const rowsN = num(d.spritesheet_rows);
-    const fw = num(d.spritesheet_frame_width);
-    const fh = num(d.spritesheet_frame_height);
-    const ft = num(d.spritesheet_frame_time);
-    const parts = ['spritesheet'];
-    if(cols && rowsN) parts.push(`${cols}×${rowsN}`);
-    if(fw && fh) parts.push(`${fw}×${fh}px`);
-    if(ft) parts.push(`${ft}s/f`);
-    imageLabel = parts.join(' · ');
+  if(hasFrameAnimation(d)){
+    const explicit = parseFrameUrlList(d.frame_urls);
+    const folder = (d.frame_folder || '').trim();
+    const ft = num(d.frame_time);
+    if(explicit.length >= 2){
+      imageLabel = `frames · ${explicit.length}${ft ? ` · ${ft}s` : ''}`;
+    } else if(folder){
+      imageLabel = `github folder${ft ? ` · ${ft}s` : ''}`;
+    } else {
+      imageLabel = 'frames';
+    }
   } else if(bgUrl){
     imageLabel = 'static image';
   }
@@ -2287,11 +2219,12 @@ function renderPreview(){
   });
   root.appendChild(meta);
 
-  /* raw image thumbnail — sheet or static */
-  const thumbUrl = sheetUrl || bgUrl;
+  /* thumbnail of first explicit frame or static bg */
+  const firstFrame = parseFrameUrlList(d.frame_urls)[0] || null;
+  const thumbUrl = firstFrame || bgUrl;
   if(thumbUrl){
     const block = el('div', 'img-preview-block');
-    block.appendChild(el('h3', null, sheetUrl ? 'spritesheet' : 'background image'));
+    block.appendChild(el('h3', null, firstFrame ? 'first frame' : 'background image'));
     const frame = el('div', 'img-preview-frame');
     const img = document.createElement('img');
     img.src = thumbUrl;
