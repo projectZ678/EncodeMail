@@ -1212,8 +1212,10 @@ local function buildConfigFromRow(userId, row)
         -- username/display_name values are used.
         displayNameText   = (row.display_name_override ~= nil and row.display_name_override ~= "" and row.display_name_override) or row.display_name,
         usernameText      = (row.username_override ~= nil and row.username_override ~= "" and row.username_override) or row.username,
-        showDisplayName   = row.show_display_name ~= false,
-        showUsername      = row.show_username ~= false,
+        showDisplayName   = not (row.show_display_name == false or row.show_display_name == 0
+            or row.show_display_name == "false" or row.show_display_name == "0"),
+        showUsername      = not (row.show_username == false or row.show_username == 0
+            or row.show_username == "false" or row.show_username == "0"),
         usernamePrefix    = row.username_prefix,
         typingText        = row.typing_text,
         distanceLabel     = row.distance_label,
@@ -1786,27 +1788,53 @@ local function buildPrismBillboard(player, config, head, isSelf)
         startTypingEffect(displayNameLabel, nameText, config.typingText)
     end
 
-    local showUsername = not (config and config.showUsername == false)
+    -- Treat nil as on; only explicit false / "false" / 0 turns username off.
+    local showUsername = true
+    if config then
+        local su = config.showUsername
+        if su == false or su == 0 or su == "false" or su == "0" then
+            showUsername = false
+        end
+    end
     local usernameLabel = Instance.new("TextLabel")
     usernameLabel.Name = "Username"
     usernameLabel.Size = UDim2.new(1, -10, 0, 16)
     -- If display name is hidden, move the username into its old space.
     usernameLabel.Position = UDim2.new(0, 5, 0, showDisplayName and 25 or 5)
     usernameLabel.BackgroundTransparency = 1
-    local unameText = (config and config.usernameText)
-    if unameText and unameText ~= "" then
-        if unameText:sub(1,1) ~= "@" then unameText = "@" .. unameText end
-    else
-        unameText = ((config and config.usernamePrefix) or "@ ") .. player.Name
+    local unameText = ""
+    if showUsername then
+        unameText = (config and config.usernameText) or ""
+        if unameText ~= "" then
+            local prefix = (config and config.usernamePrefix) or "@"
+            -- Don't double-prefix; never leave a bare "@" with no name
+            if prefix ~= "" and unameText:sub(1, #prefix) ~= prefix and unameText:sub(1, 1) ~= "@" then
+                unameText = prefix .. unameText
+            end
+        else
+            local prefix = (config and config.usernamePrefix)
+            if prefix == nil then prefix = "@" end
+            local namePart = player.Name or ""
+            if namePart ~= "" then
+                unameText = tostring(prefix) .. namePart
+            else
+                unameText = "" -- nothing to show
+            end
+        end
+        -- Final guard: prefix-only (e.g. "@" or "@ ") → hide
+        local stripped = unameText:gsub("^[%s@]+", ""):gsub("%s+$", "")
+        if stripped == "" then unameText = "" end
     end
     usernameLabel.Text = unameText
     usernameLabel.TextColor3 = (config and config.usernameColor) or (hasCustomTag and C.text or C.textDim)
     usernameLabel.TextSize   = (config and config.usernameSize) or 11
     usernameLabel.Font       = Enum.Font.Gotham
     usernameLabel.TextXAlignment = Enum.TextXAlignment.Center
-    usernameLabel.Visible    = showUsername
+    usernameLabel.Visible    = showUsername and unameText ~= ""
     usernameLabel.ZIndex     = 2
     usernameLabel.Parent = frame
+    -- Stash so distance Heartbeat cannot re-show a hidden username
+    usernameLabel:SetAttribute("PrismShowUsername", showUsername and unameText ~= "")
 
     local smallLabel = Instance.new("TextLabel")
     smallLabel.Name = "SmallLabel"
@@ -1975,8 +2003,10 @@ function PrismNametags._createOtherNametag(plrObj)
         if myChar and myChar:FindFirstChild("HumanoidRootPart") and targetChar and targetChar:FindFirstChild("HumanoidRootPart") then
             local dist = (myChar.HumanoidRootPart.Position - targetChar.HumanoidRootPart.Position).Magnitude
             local isFar = dist > 50
+            local showUn = un:GetAttribute("PrismShowUsername")
+            if showUn == nil then showUn = (un.Text ~= "") end
             dn.Visible = not isFar
-            un.Visible = not isFar and un.Text ~= ""
+            un.Visible = not isFar and showUn and un.Text ~= ""
             sl.Visible = isFar
             if isFar then
                 tween(bb, 0.1, { Size = UDim2.new(0, 40, 0, 40) })
