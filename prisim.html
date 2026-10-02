@@ -1853,33 +1853,64 @@ async function fetchGithubFolderFrames(folderUrl){
     if(!parsed) return [];
 
     const { owner, repo, branch, path } = parsed;
-    const api = `https://api.github.com/repos/${owner}/${repo}/contents/${path ? encodeURI(path) : ''}?ref=${encodeURIComponent(branch)}`;
+    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+    const prefix = path ? path.replace(/^\/+|\/+$/g, '') + '/' : '';
 
+    // 1) GitHub Contents API
     try{
-      const res = await fetch(api, {
-        headers: {
-          'Accept': 'application/vnd.github+json',
-        },
-      });
-      if(!res.ok){
-        console.warn('GitHub folder fetch failed', res.status, await res.text().catch(()=>''));
-        githubFolderCache[key] = [];
-        return [];
+      const api = `https://api.github.com/repos/${owner}/${repo}/contents/${path ? encodeURI(path) : ''}?ref=${encodeURIComponent(branch)}`;
+      const res = await fetch(api, { headers: { 'Accept': 'application/vnd.github+json' } });
+      if(res.ok){
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : [];
+        const urls = list
+          .filter(f => f && f.type === 'file' && f.download_url && IMG_EXT_RE.test(f.name || f.download_url))
+          .sort((a, b) => collator.compare(a.name || '', b.name || ''))
+          .map(f => f.download_url);
+        if(urls.length){
+          githubFolderCache[key] = urls;
+          return urls;
+        }
+      } else {
+        console.warn('GitHub API', res.status);
       }
-      const data = await res.json();
-      const list = Array.isArray(data) ? data : [];
-      const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-      const urls = list
-        .filter(f => f && f.type === 'file' && f.download_url && IMG_EXT_RE.test(f.name || f.download_url))
-        .sort((a, b) => collator.compare(a.name || '', b.name || ''))
-        .map(f => f.download_url);
-      githubFolderCache[key] = urls;
-      return urls;
     }catch(e){
-      console.warn('GitHub folder error', e);
-      githubFolderCache[key] = [];
-      return [];
+      console.warn('GitHub API error', e);
     }
+
+    // 2) jsDelivr package flat listing (no GitHub rate limit)
+    try{
+      const japi = `https://data.jsdelivr.com/v1/packages/gh/${owner}/${repo}@${branch}/flat`;
+      const res = await fetch(japi);
+      if(res.ok){
+        const data = await res.json();
+        const files = (data && data.files) || [];
+        const matched = files
+          .map(f => f.name || f)
+          .filter(name => typeof name === 'string')
+          .map(name => name.replace(/^\//, ''))
+          .filter(name => name.startsWith(prefix) && IMG_EXT_RE.test(name))
+          // only direct children of the folder (not nested)
+          .filter(name => {
+            const rest = name.slice(prefix.length);
+            return rest && !rest.includes('/');
+          })
+          .sort(collator.compare);
+        const urls = matched.map(name =>
+          `https://cdn.jsdelivr.net/gh/${owner}/${repo}@${branch}/${name}`
+        );
+        if(urls.length){
+          githubFolderCache[key] = urls;
+          return urls;
+        }
+      }
+    }catch(e){
+      console.warn('jsDelivr listing error', e);
+    }
+
+    // 3) Last resort: raw.githubusercontent.com sequential probe is not done in-browser
+    githubFolderCache[key] = [];
+    return [];
   })();
 
   githubFolderCache[key] = { loading: promise };
