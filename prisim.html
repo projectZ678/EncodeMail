@@ -2176,16 +2176,22 @@ function renderPreview(){
     }
   }
 
-  if(d.show_username !== false && usernameRaw){
+  // Fully hide username when toggled off — never leave a bare "@"
+  if(d.show_username !== false && d.show_username !== 0 && d.show_username !== 'false'){
     const prefix = nonEmpty(d.username_prefix) ? d.username_prefix : '';
-    let u = usernameRaw;
-    if(!u.startsWith('@') && !u.startsWith(prefix)) u = prefix + u;
-    const ul = el('div', 'tag-user', u);
-    ul.style.color = normHex(d.username_color) || '#8a8a8a';
-    ul.style.fontSize = Math.max(6, (num(d.username_size) || 11) * s * .72) + 'px';
-    if(d.font) ul.style.fontFamily = `"${d.font}", sans-serif`;
-    applyTextFx(ul);
-    tag.appendChild(ul);
+    let u = (usernameRaw || '').trim();
+    if(u){
+      if(prefix && !u.startsWith('@') && !u.startsWith(prefix)) u = prefix + u;
+      const stripped = u.replace(/^[\s@]+/, '').trim();
+      if(stripped){
+        const ul = el('div', 'tag-user', u);
+        ul.style.color = normHex(d.username_color) || '#8a8a8a';
+        ul.style.fontSize = Math.max(6, (num(d.username_size) || 11) * s * .72) + 'px';
+        if(d.font) ul.style.fontFamily = `"${d.font}", sans-serif`;
+        applyTextFx(ul);
+        tag.appendChild(ul);
+      }
+    }
   }
 
   if(d.show_distance && nonEmpty(d.distance_label)){
