@@ -209,20 +209,36 @@ local function detectImageKind(data)
     return nil, "unknown file format"
 end
 
+local function urlEncode(s)
+    return (tostring(s):gsub("([^%w%-%.%_%~])", function(c)
+        return string.format("%%%02X", string.byte(c))
+    end))
+end
+
+-- Hosts that already serve Roblox-friendly PNG/JPEG — try direct first.
+local function prefersDirectDownload(url)
+    url = tostring(url):lower()
+    return url:find("raw%.githubusercontent%.com", 1, false)
+        or url:find("i%.postimg%.cc", 1, false)
+        or url:find("postimg%.cc", 1, false)
+        or url:find("i%.imgur%.com", 1, false)
+        or url:find("cdn%.jsdelivr%.net", 1, false)
+        or url:find("%.png", 1, true)
+        or url:find("%.jpg", 1, true)
+        or url:find("%.jpeg", 1, true)
+end
+
 local function normalizeImageUrl(url)
-    -- wsrv.nl re-encodes the source into a real PNG. That's the only reason
-    -- the cat link "just works": whatever the upstream format is (WebP,
-    -- AVIF, palette PNG, ...), Roblox receives a clean PNG and the pixel
-    -- analyzer gets a readable image. Every other sheet has to go through
-    -- the same door or it gets rejected / mis-detected.
-    -- il=0 forces a non-interlaced PNG, which the pixel analyzer requires.
+    -- wsrv.nl re-encodes the source into a real PNG. Useful when the source
+    -- is WebP/AVIF/etc. Must fully URL-encode the nested url= value or wsrv
+    -- returns HTTP 400 (common with postimg / query-heavy links).
     if url:find("wsrv.nl", 1, true) then
         if not url:find("output=", 1, true) then
             url = url .. (url:find("?", 1, true) and "&" or "?") .. "output=png&il=0"
         end
         return url
     end
-    return "https://wsrv.nl/?url=" .. url:gsub("&", "%%26") .. "&output=png&il=0"
+    return "https://wsrv.nl/?url=" .. urlEncode(url) .. "&output=png&il=0"
 end
 
 local downloadFailedAt = {}
@@ -253,16 +269,20 @@ local function downloadImageForUser(userId, url)
     if downloadFailedAt[url] and tick() - downloadFailedAt[url] < 30 then return nil end
 
     -- Build a list of URLs to try, best first:
-    --  1) the normalized wsrv.nl PNG URL (this is what makes every sheet
-    --     behave like the cat.png link — same door, same PNG output),
-    --  2) if the user pasted a wsrv link, the ORIGINAL image URL inside
-    --     ?url= as a fallback (no proxy, so no re-encoding or rate limits),
-    --  3) the URL exactly as given.
+    --  • Hosts that already serve PNG (postimg, raw GitHub, etc.) → direct first
+    --  • Otherwise → wsrv.nl (fully encoded) then direct fallback
     local candidates, seen = {}, {}
     local function addCandidate(u)
         if u and u ~= "" and not seen[u] then seen[u] = true; candidates[#candidates + 1] = u end
     end
-    addCandidate(normalizeImageUrl(url))
+    local directFirst = prefersDirectDownload(url)
+    if directFirst then
+        addCandidate(url)
+        addCandidate(normalizeImageUrl(url))
+    else
+        addCandidate(normalizeImageUrl(url))
+        addCandidate(url)
+    end
     if url:find("wsrv.nl", 1, true) then
         local inner = url:match("[?&]url=([^&]+)")
         if inner then
@@ -271,7 +291,6 @@ local function downloadImageForUser(userId, url)
             addCandidate(inner)
         end
     end
-    addCandidate(url)
 
     local folder = "prism/nametags/supabase/user_" .. tostring(userId)
     if makefolder and not isfolder(folder) then pcall(makefolder, folder) end
@@ -897,38 +916,104 @@ end
 local function fetchGithubFolderFrameUrls(folderUrl)
     local owner, repo, branch, path = parseGithubFolderUrl(folderUrl)
     if not owner then return {} end
-    local apiPath = path ~= "" and path or ""
-    local api = ("https://api.github.com/repos/%s/%s/contents/%s?ref=%s"):format(
-        owner, repo, apiPath, branch)
     if not httprequest then return {} end
-    local ok, res = pcall(httprequest, {
-        Url = api,
-        Method = "GET",
-        Headers = { ["Accept"] = "application/vnd.github+json" },
-    })
-    if not ok or not res then return {} end
-    local status = res.StatusCode or res.status or 0
-    local body = res.Body or res.body or ""
-    if status < 200 or status >= 300 then
-        warn("[Prism] GitHub folder list failed HTTP " .. tostring(status))
-        return {}
+
+    local function sortAndReturn(entries)
+        table.sort(entries, function(a, b) return tostring(a.name) < tostring(b.name) end)
+        local out = {}
+        for i = 1, #entries do out[i] = entries[i].url end
+        return out
     end
-    local decodeOk, data = pcall(HttpService.JSONDecode, HttpService, body)
-    if not decodeOk or type(data) ~= "table" then return {} end
-    local entries = {}
-    for _, item in ipairs(data) do
-        if type(item) == "table" and item.type == "file" and type(item.download_url) == "string" then
-            local name = tostring(item.name or "")
-            local lower = name:lower()
-            if lower:match("%.png$") or lower:match("%.jpe?g$") or lower:match("%.webp$") then
-                entries[#entries + 1] = { name = name, url = item.download_url }
+
+    local function isImageName(name)
+        local lower = tostring(name or ""):lower()
+        return lower:match("%.png$") or lower:match("%.jpe?g$") or lower:match("%.webp$") or lower:match("%.gif$")
+    end
+
+    -- 1) GitHub Contents API (needs User-Agent; 403 = rate limit / blocked)
+    do
+        local apiPath = path ~= "" and path or ""
+        local api = ("https://api.github.com/repos/%s/%s/contents/%s?ref=%s"):format(
+            owner, repo, apiPath, branch)
+        local ok, res = pcall(httprequest, {
+            Url = api,
+            Method = "GET",
+            Headers = {
+                ["Accept"] = "application/vnd.github+json",
+                ["User-Agent"] = "PrismNametags/1.0",
+            },
+        })
+        if ok and res then
+            local status = res.StatusCode or res.status or 0
+            local body = res.Body or res.body or ""
+            if status >= 200 and status < 300 then
+                local decodeOk, data = pcall(HttpService.JSONDecode, HttpService, body)
+                if decodeOk and type(data) == "table" then
+                    local entries = {}
+                    for _, item in ipairs(data) do
+                        if type(item) == "table" and item.type == "file"
+                            and type(item.download_url) == "string"
+                            and isImageName(item.name)
+                        then
+                            entries[#entries + 1] = { name = item.name, url = item.download_url }
+                        end
+                    end
+                    if #entries > 0 then
+                        print(("[Prism] GitHub API listed %d frames"):format(#entries))
+                        return sortAndReturn(entries)
+                    end
+                end
+            else
+                warn(("[Prism] GitHub API HTTP %s — falling back to page scrape"):format(tostring(status)))
             end
         end
     end
-    table.sort(entries, function(a, b) return a.name < b.name end)
-    local out = {}
-    for i = 1, #entries do out[i] = entries[i].url end
-    return out
+
+    -- 2) Scrape the public tree page HTML (no API rate limit)
+    do
+        local pageUrl = ("https://github.com/%s/%s/tree/%s/%s"):format(
+            owner, repo, branch, path ~= "" and path or "")
+        local ok, res = pcall(httprequest, {
+            Url = pageUrl,
+            Method = "GET",
+            Headers = { ["User-Agent"] = "Mozilla/5.0 PrismNametags/1.0" },
+        })
+        if ok and res then
+            local status = res.StatusCode or res.status or 0
+            local body = res.Body or res.body or ""
+            if status >= 200 and status < 300 and body ~= "" then
+                local entries, seen = {}, {}
+                -- Match filenames under this folder from the page / embedded JSON
+                local folderPrefix = path ~= "" and (path .. "/") or ""
+                for name in body:gmatch(folderPrefix:gsub("(%W)", "%%%1") .. "([%w%._%-]+%.[Pp][Nn][Gg])") do
+                    if isImageName(name) and not seen[name] then
+                        seen[name] = true
+                        local raw = ("https://raw.githubusercontent.com/%s/%s/%s/%s%s"):format(
+                            owner, repo, branch, folderPrefix, name)
+                        entries[#entries + 1] = { name = name, url = raw }
+                    end
+                end
+                -- Broader fallback: any frame_*.png on the page
+                if #entries == 0 then
+                    for name in body:gmatch("(frame_[%w%._%-]+%.[Pp][Nn][Gg])") do
+                        if not seen[name] then
+                            seen[name] = true
+                            local raw = ("https://raw.githubusercontent.com/%s/%s/%s/%s%s"):format(
+                                owner, repo, branch, folderPrefix, name)
+                            entries[#entries + 1] = { name = name, url = raw }
+                        end
+                    end
+                end
+                if #entries > 0 then
+                    print(("[Prism] GitHub page scrape listed %d frames"):format(#entries))
+                    return sortAndReturn(entries)
+                end
+            end
+        end
+    end
+
+    warn("[Prism] Could not list GitHub folder frames. Paste raw frame URLs into frame_urls instead.")
+    return {}
 end
 
 local function downloadFrameAssets(userId, urls)
