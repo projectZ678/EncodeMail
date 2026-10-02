@@ -1772,15 +1772,12 @@ function loadFrameImage(url){
   if(hit && hit.loading) return hit.loading;
 
   const promise = new Promise((resolve, reject) => {
+    // Do NOT set crossOrigin — raw GitHub images display fine as <img>,
+    // and crossOrigin can break loads when CORS is flaky.
     const img = new Image();
-    img.crossOrigin = 'anonymous';
+    img.decoding = 'async';
     img.onload = () => { frameImgCache[url] = img; resolve(img); };
-    img.onerror = () => {
-      const img2 = new Image();
-      img2.onload = () => { frameImgCache[url] = img2; resolve(img2); };
-      img2.onerror = () => { delete frameImgCache[url]; reject(new Error('frame load failed')); };
-      img2.src = url;
-    };
+    img.onerror = () => { delete frameImgCache[url]; reject(new Error('frame load failed: ' + url)); };
     img.src = url;
   });
   frameImgCache[url] = { loading: promise };
@@ -1945,83 +1942,65 @@ async function collectFrameUrls(d){
   return explicit;
 }
 
-function paintFrameContain(ctx, img, cw, ch){
-  const fw = img.naturalWidth || img.width;
-  const fh = img.naturalHeight || img.height;
-  if(!fw || !fh) return;
-  const scale = Math.min(cw / fw, ch / fh);
-  const dw = fw * scale, dh = fh * scale;
-  const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
-  ctx.clearRect(0, 0, cw, ch);
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(img, dx, dy, dw, dh);
-}
-
-function startFramePlayer(canvas, images, frameTimeMs, token){
-  const ctx = canvas.getContext('2d');
-  let idx = 0;
-  let last = performance.now();
-  let acc = 0;
-  const delay = Math.max(20, frameTimeMs || 100);
-  const n = images.length;
-  if(!n) return;
-
-  paintFrameContain(ctx, images[0], canvas.width, canvas.height);
-
-  const tick = (now) => {
-    if(token !== frameAnimToken) return;
-    acc += now - last;
-    last = now;
-    let advanced = false;
-    while(acc >= delay){
-      acc -= delay;
-      idx = (idx + 1) % n;
-      advanced = true;
-    }
-    if(advanced) paintFrameContain(ctx, images[idx], canvas.width, canvas.height);
-    requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
-}
-
 function mountFrameAnimation(tag, d, br, cssW, cssH){
   const token = ++frameAnimToken;
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const canvas = document.createElement('canvas');
-  canvas.className = 'tag-bg-canvas';
-  canvas.width = Math.max(1, Math.round(cssW * dpr));
-  canvas.height = Math.max(1, Math.round(cssH * dpr));
-  if(br != null) canvas.style.borderRadius = 'inherit';
-  tag.appendChild(canvas);
+
+  // Same visual role as a static background image: <img class="tag-bg-img">
+  const img = document.createElement('img');
+  img.className = 'tag-bg-img';
+  img.alt = '';
+  img.decoding = 'async';
+  if(br != null) img.style.borderRadius = 'inherit';
+  tag.insertBefore(img, tag.firstChild);
 
   const frameTimeSec = num(d.frame_time);
   const frameTimeMs = (frameTimeSec != null && frameTimeSec > 0 ? frameTimeSec : 0.1) * 1000;
 
-  collectFrameUrls(d).then(urls => {
+  collectFrameUrls(d).then(async urls => {
     if(token !== frameAnimToken) return;
     if(!urls.length){
-      canvas.remove();
+      img.remove();
       return;
     }
-    canvas.dataset.frameMeta = urls.length + ' frames';
-    return Promise.all(urls.map(u => loadFrameImage(u).catch(() => null)))
-      .then(imgs => {
-        if(token !== frameAnimToken) return;
-        const ok = imgs.filter(Boolean);
-        if(!ok.length){
-          canvas.remove();
-          return;
-        }
-        if(ok.length === 1){
-          paintFrameContain(canvas.getContext('2d'), ok[0], canvas.width, canvas.height);
-          return;
-        }
-        startFramePlayer(canvas, ok, frameTimeMs, token);
-      });
-  }).catch(() => {
-    if(token !== frameAnimToken) return;
-    canvas.remove();
+
+    // Preload frames (skip failures) so playback is smooth
+    const loaded = [];
+    for(const u of urls){
+      try{
+        await loadFrameImage(u);
+        loaded.push(u);
+      }catch{}
+      if(token !== frameAnimToken) return;
+    }
+    if(!loaded.length){
+      img.remove();
+      console.warn('No frames loaded');
+      return;
+    }
+
+    let idx = 0;
+    img.src = loaded[0];
+    img.dataset.frameMeta = loaded.length + ' frames';
+
+    if(loaded.length === 1) return;
+
+    let last = performance.now();
+    let acc = 0;
+    const tick = (now) => {
+      if(token !== frameAnimToken) return;
+      acc += now - last;
+      last = now;
+      while(acc >= frameTimeMs){
+        acc -= frameTimeMs;
+        idx = (idx + 1) % loaded.length;
+        img.src = loaded[idx];
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }).catch(e => {
+    console.warn('frame animation failed', e);
+    if(token === frameAnimToken) img.remove();
   });
 
   return true;
@@ -2136,6 +2115,8 @@ function renderPreview(){
   const cssH = H * viewScale;
   // Frame animation takes priority over static background image
   if(hasFrameAnimation(d)){
+    // let frames fill the tag (don't cover them with solid fill)
+    tag.style.background = 'transparent';
     mountFrameAnimation(tag, d, br, cssW, cssH);
   } else if(bgUrl){
     mountStaticBackground(tag, bgUrl, br);
