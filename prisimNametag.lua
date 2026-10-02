@@ -1253,6 +1253,12 @@ local function getNametagConfig(userId)
         if cached and cached.sig == sig then return cached.config end
 
         local cfg = buildConfigFromRow(userId, row)
+        print(("[Prism] Config user=%s show_username(raw)=%s -> showUsername=%s show_display_name(raw)=%s -> showDisplayName=%s"):format(
+            tostring(userId),
+            tostring(row.show_username),
+            tostring(cfg.showUsername),
+            tostring(row.show_display_name),
+            tostring(cfg.showDisplayName)))
 
         -- Only cache complete configs. If an image failed to download, retry
         -- next sync instead of freezing a broken config.
@@ -1286,7 +1292,10 @@ local function fetchSupabaseConfigs()
         local uid = tonumber(row.user_id)
         if uid and playerIds[uid] then newMap[uid] = row end
     end
+    -- Drop cached configs so toggles (show_username / show_display_name) always
+    -- rebuild on the next createNametag after a sync or character reset.
     remoteConfigs = newMap
+    configCache = {}
 end
 
 -- ============================================================
@@ -1772,17 +1781,27 @@ local function buildPrismBillboard(player, config, head, isSelf)
     displayNameLabel.Size = UDim2.new(1, -10, 0, 20)
     displayNameLabel.Position = UDim2.new(0, 5, 0, 5)
     displayNameLabel.BackgroundTransparency = 1
-    local showDisplayName = not (config and config.showDisplayName == false)
-    local nameText = (config and config.displayNameText) or player.DisplayName
+    local showDisplayName = true
+    if config then
+        local sd = config.showDisplayName
+        if sd == false or sd == 0 or sd == "false" or sd == "0" then
+            showDisplayName = false
+        end
+    end
+    local nameText = ""
+    if showDisplayName then
+        nameText = (config and config.displayNameText) or player.DisplayName or ""
+    end
     local hasTyping = showDisplayName and config and config.typingText and config.typingText ~= ""
     displayNameLabel.Text = hasTyping and "" or nameText
-    displayNameLabel.Visible = showDisplayName
+    displayNameLabel.Visible = showDisplayName and (hasTyping or nameText ~= "")
     displayNameLabel.TextColor3 = (config and config.textColor) or C.text
     displayNameLabel.TextSize   = (config and config.textSize) or 14
     displayNameLabel.Font       = (config and config.font) or Enum.Font.GothamBold
     displayNameLabel.TextXAlignment = Enum.TextXAlignment.Center
     displayNameLabel.ZIndex = 2
     displayNameLabel.Parent = frame
+    displayNameLabel:SetAttribute("PrismShowDisplayName", showDisplayName and (hasTyping or nameText ~= ""))
 
     if hasTyping then
         startTypingEffect(displayNameLabel, nameText, config.typingText)
@@ -1796,6 +1815,11 @@ local function buildPrismBillboard(player, config, head, isSelf)
             showUsername = false
         end
     end
+
+    -- Store toggles on the frame so Heartbeat / updates cannot re-show labels
+    frame:SetAttribute("PrismShowDisplayName", showDisplayName == true)
+    frame:SetAttribute("PrismShowUsername", showUsername == true)
+
     local usernameLabel = Instance.new("TextLabel")
     usernameLabel.Name = "Username"
     usernameLabel.Size = UDim2.new(1, -10, 0, 16)
@@ -1807,7 +1831,6 @@ local function buildPrismBillboard(player, config, head, isSelf)
         unameText = (config and config.usernameText) or ""
         if unameText ~= "" then
             local prefix = (config and config.usernamePrefix) or "@"
-            -- Don't double-prefix; never leave a bare "@" with no name
             if prefix ~= "" and unameText:sub(1, #prefix) ~= prefix and unameText:sub(1, 1) ~= "@" then
                 unameText = prefix .. unameText
             end
@@ -1818,10 +1841,9 @@ local function buildPrismBillboard(player, config, head, isSelf)
             if namePart ~= "" then
                 unameText = tostring(prefix) .. namePart
             else
-                unameText = "" -- nothing to show
+                unameText = ""
             end
         end
-        -- Final guard: prefix-only (e.g. "@" or "@ ") → hide
         local stripped = unameText:gsub("^[%s@]+", ""):gsub("%s+$", "")
         if stripped == "" then unameText = "" end
     end
@@ -1830,10 +1852,16 @@ local function buildPrismBillboard(player, config, head, isSelf)
     usernameLabel.TextSize   = (config and config.usernameSize) or 11
     usernameLabel.Font       = Enum.Font.Gotham
     usernameLabel.TextXAlignment = Enum.TextXAlignment.Center
-    usernameLabel.Visible    = showUsername and unameText ~= ""
     usernameLabel.ZIndex     = 2
-    usernameLabel.Parent = frame
-    -- Stash so distance Heartbeat cannot re-show a hidden username
+    -- When toggled off: empty + invisible + do not rely on Heartbeat
+    if showUsername and unameText ~= "" then
+        usernameLabel.Visible = true
+        usernameLabel.Parent = frame
+    else
+        usernameLabel.Text = ""
+        usernameLabel.Visible = false
+        usernameLabel.Parent = frame -- keep instance for distance handler refs
+    end
     usernameLabel:SetAttribute("PrismShowUsername", showUsername and unameText ~= "")
 
     local smallLabel = Instance.new("TextLabel")
@@ -1849,6 +1877,9 @@ local function buildPrismBillboard(player, config, head, isSelf)
     smallLabel.Visible = false
     smallLabel.ZIndex = 2
     smallLabel.Parent = frame
+
+    print(("[Prism] Tag for %s | showDisplayName=%s showUsername=%s uname=%q"):format(
+        tostring(player.Name), tostring(showDisplayName), tostring(showUsername), unameText))
 
     return billboard, bgGradient, frame, displayNameLabel, usernameLabel, smallLabel, width, height
 end
@@ -1882,6 +1913,10 @@ function PrismNametags._createNametag()
     if not player.Character then return end
     local head = player.Character:FindFirstChild("Head")
     if not head then return end
+
+    -- Always rebuild from the current Supabase row (no stale show_* toggles).
+    configCache[player.UserId] = nil
+    appliedSignatures[player.UserId] = nil
 
     -- Get the config FIRST (may yield), then swap old for new with no gap.
     local config = getNametagConfig(player.UserId)
@@ -1954,6 +1989,10 @@ function PrismNametags._createOtherNametag(plrObj)
     local head = plrObj.Character:FindFirstChild("Head")
     if not head then return end
 
+    -- Always rebuild from the current Supabase row (no stale show_* toggles).
+    configCache[plrObj.UserId] = nil
+    appliedSignatures[plrObj.UserId] = nil
+
     -- Get the config FIRST (may yield), then swap old for new with no gap.
     local config = getNametagConfig(plrObj.UserId)
     head = plrObj.Character and plrObj.Character:FindFirstChild("Head")
@@ -2003,10 +2042,15 @@ function PrismNametags._createOtherNametag(plrObj)
         if myChar and myChar:FindFirstChild("HumanoidRootPart") and targetChar and targetChar:FindFirstChild("HumanoidRootPart") then
             local dist = (myChar.HumanoidRootPart.Position - targetChar.HumanoidRootPart.Position).Magnitude
             local isFar = dist > 50
-            local showUn = un:GetAttribute("PrismShowUsername")
-            if showUn == nil then showUn = (un.Text ~= "") end
-            dn.Visible = not isFar
-            un.Visible = not isFar and showUn and un.Text ~= ""
+            local showDn = frame:GetAttribute("PrismShowDisplayName")
+            if showDn == nil then showDn = dn:GetAttribute("PrismShowDisplayName") end
+            if showDn == nil then showDn = true end
+            local showUn = frame:GetAttribute("PrismShowUsername")
+            if showUn == nil then showUn = un:GetAttribute("PrismShowUsername") end
+            if showUn == nil then showUn = false end
+            -- Respect Supabase toggles — never force names back on after update/distance
+            dn.Visible = (not isFar) and (showDn == true)
+            un.Visible = (not isFar) and (showUn == true) and un.Text ~= ""
             sl.Visible = isFar
             if isFar then
                 tween(bb, 0.1, { Size = UDim2.new(0, 40, 0, 40) })
