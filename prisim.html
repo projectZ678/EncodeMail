@@ -627,6 +627,18 @@ button:disabled { opacity: .35; cursor: not-allowed; }
   background-position: center;
   z-index: 1;
   border-radius: inherit;
+  pointer-events: none;
+}
+.tag-bg-img {
+  position: absolute; inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  z-index: 1;
+  border-radius: inherit;
+  pointer-events: none;
+  display: block;
 }
 .tag-name, .tag-user {
   position: relative;
@@ -1795,10 +1807,21 @@ function renderPreview(){
 
   const bgUrl = (d.background_image || '').trim();
   if(bgUrl){
-    const bg = el('div', 'tag-bg');
-    bg.style.backgroundImage = `url("${bgUrl}")`;
-    if(br != null) bg.style.borderRadius = 'inherit';
-    tag.appendChild(bg);
+    // Prefer <img> so animated GIFs play frame-by-frame reliably
+    const img = document.createElement('img');
+    img.className = 'tag-bg-img';
+    img.src = bgUrl;
+    img.alt = '';
+    img.decoding = 'async';
+    if(br != null) img.style.borderRadius = 'inherit';
+    img.onerror = () => {
+      img.remove();
+      const bg = el('div', 'tag-bg');
+      bg.style.backgroundImage = `url("${bgUrl}")`;
+      if(br != null) bg.style.borderRadius = 'inherit';
+      tag.insertBefore(bg, tag.firstChild);
+    };
+    tag.appendChild(img);
   }
 
   const profile = state.profileCache[d[PK]] || {};
@@ -1880,11 +1903,16 @@ function renderPreview(){
   root.appendChild(stage);
 
   const meta = el('div', 'preview-meta');
+  const isGifMeta = bgUrl && (
+    /\.gif(\?|#|$)/i.test(bgUrl)
+    || /[?&]format=gif\b/i.test(bgUrl)
+    || /tenor\.com|giphy\.com|media\.giphy/i.test(bgUrl)
+  );
   const rows = [
     ['size', `${W} × ${H}`],
     ['scale', String(userScale)],
     ['border', spin ? 'animated gradient' : 'solid'],
-    ['image', bgUrl ? 'static image' : 'none'],
+    ['image', !bgUrl ? 'none' : (isGifMeta ? 'animated gif' : 'static image')],
     ['font', d.font || 'default'],
   ];
   rows.forEach(([k, v]) => {
