@@ -148,6 +148,7 @@ local SIGNATURE_FIELDS = {
     "spritesheet_url", "spritesheet_columns", "spritesheet_rows",
     "spritesheet_frame_width", "spritesheet_frame_height",
     "spritesheet_frame_time", "spritesheet_frames",
+    "frame_urls", "frame_folder", "frame_time",
 }
 
 local function rowSignature(row)
@@ -864,6 +865,87 @@ local function autoDetectGrid(imgW, imgH)
     return best
 end
 
+
+-- ============================================================
+-- FRAME URL LIST + GITHUB FOLDER
+-- ============================================================
+local function parseFrameUrlList(text)
+    local urls = {}
+    if type(text) ~= "string" or text == "" then return urls end
+    for line in text:gmatch("[^\r\n]+") do
+        local u = line:match("^%s*(.-)%s*$")
+        if u and u:match("^https?://") then
+            urls[#urls + 1] = u
+        end
+    end
+    return urls
+end
+
+local function parseGithubFolderUrl(url)
+    if type(url) ~= "string" then return nil end
+    url = url:match("^%s*(.-)%s*$") or ""
+    local owner, repo, branch, path = url:match(
+        "^https?://github%.com/([^/]+)/([^/]+)/tree/([^/]+)/?(.*)$")
+    if owner then
+        path = path or ""
+        path = path:gsub("/+$", "")
+        return owner, repo:gsub("%.git$", ""), branch, path
+    end
+    return nil
+end
+
+local function fetchGithubFolderFrameUrls(folderUrl)
+    local owner, repo, branch, path = parseGithubFolderUrl(folderUrl)
+    if not owner then return {} end
+    local apiPath = path ~= "" and path or ""
+    local api = ("https://api.github.com/repos/%s/%s/contents/%s?ref=%s"):format(
+        owner, repo, apiPath, branch)
+    if not httprequest then return {} end
+    local ok, res = pcall(httprequest, {
+        Url = api,
+        Method = "GET",
+        Headers = { ["Accept"] = "application/vnd.github+json" },
+    })
+    if not ok or not res then return {} end
+    local status = res.StatusCode or res.status or 0
+    local body = res.Body or res.body or ""
+    if status < 200 or status >= 300 then
+        warn("[Prism] GitHub folder list failed HTTP " .. tostring(status))
+        return {}
+    end
+    local decodeOk, data = pcall(HttpService.JSONDecode, HttpService, body)
+    if not decodeOk or type(data) ~= "table" then return {} end
+    local entries = {}
+    for _, item in ipairs(data) do
+        if type(item) == "table" and item.type == "file" and type(item.download_url) == "string" then
+            local name = tostring(item.name or "")
+            local lower = name:lower()
+            if lower:match("%.png$") or lower:match("%.jpe?g$") or lower:match("%.webp$") then
+                entries[#entries + 1] = { name = name, url = item.download_url }
+            end
+        end
+    end
+    table.sort(entries, function(a, b) return a.name < b.name end)
+    local out = {}
+    for i = 1, #entries do out[i] = entries[i].url end
+    return out
+end
+
+local function downloadFrameAssets(userId, urls)
+    local assets = {}
+    if type(urls) ~= "table" then return assets end
+    for i = 1, #urls do
+        local path = downloadImageForUser(userId, urls[i])
+        if path then
+            local asset = getAsset(path)
+            if asset then
+                assets[#assets + 1] = asset
+            end
+        end
+    end
+    return assets
+end
+
 -- ============================================================
 -- ROW -> CONFIG
 -- ============================================================
@@ -1011,6 +1093,27 @@ local function buildConfigFromRow(userId, row)
         and cols and cols > 0
         and rows and rows > 0
 
+    -- ---- Individual frame URLs (preferred over spritesheet when present) ----
+    local frameAssets = {}
+    local frameUrlList = parseFrameUrlList(row.frame_urls)
+    if #frameUrlList == 0 and row.frame_folder and row.frame_folder ~= "" then
+        frameUrlList = fetchGithubFolderFrameUrls(row.frame_folder)
+        if #frameUrlList > 0 then
+            print(("[Prism] GitHub folder yielded %d frame URLs"):format(#frameUrlList))
+        end
+    end
+    if #frameUrlList > 0 then
+        print(("[Prism] Downloading %d frame images for user %s..."):format(#frameUrlList, tostring(userId)))
+        frameAssets = downloadFrameAssets(userId, frameUrlList)
+        print(("[Prism] Loaded %d/%d frame assets for user %s"):format(#frameAssets, #frameUrlList, tostring(userId)))
+    end
+    local frameAnimActive = #frameAssets >= 2
+    local frameTime = tonumber(row.frame_time) or 0.1
+    if frameAnimActive then
+        spritesheetActive = false
+    end
+    -- -----------------------------------------------------------------------
+
     return {
         userIds           = {},
         imagePath         = imagePath,
@@ -1034,9 +1137,11 @@ local function buildConfigFromRow(userId, row)
         usernameSize      = tonumber(row.username_size),
         width             = tonumber(row.nametag_width),
         height            = tonumber(row.nametag_height),
-        isAnimated        = false,
+        isAnimated        = frameAnimActive,
         frameBasePath     = nil,
-        frameCount        = 0,
+        frameCount        = #frameAssets,
+        frameAssets       = frameAssets,
+        frameTime         = frameTime,
         spritesheetUrl         = row.spritesheet_url,
         spritesheetAsset       = spritesheetAsset,
         spritesheetPath        = spritesheetPath,
@@ -1066,8 +1171,11 @@ local function getNametagConfig(userId)
         -- next sync instead of freezing a broken config.
         local wantsSprite = row.spritesheet_url and row.spritesheet_url ~= ""
         local wantsImage  = row.background_image and row.background_image ~= ""
-        local complete = (not wantsSprite or cfg.spritesheetActive)
-                     and (not wantsImage or cfg.imagePath ~= nil)
+        local wantsFrames = (row.frame_urls and row.frame_urls ~= "")
+                         or (row.frame_folder and row.frame_folder ~= "")
+        local complete = (not wantsSprite or cfg.spritesheetActive or wantsFrames)
+                     and (not wantsImage or cfg.imagePath ~= nil or wantsFrames)
+                     and (not wantsFrames or (cfg.frameAssets and #cfg.frameAssets >= 1))
         if complete then configCache[userId] = { sig = sig, config = cfg } end
         return cfg
     end
@@ -1277,47 +1385,71 @@ local function stopFrameAnimation(parentFrame)
 end
 
 local function startFrameAnimation(parentFrame, config)
-    if not config.isAnimated or (config.frameCount or 0) <= 1 then return end
-    local frameLabels   = {}
-    local frameCount    = config.frameCount or 1
-    local frameBasePath = config.frameBasePath or ""
+    local labels = {} -- dense 1-based array of ImageLabels
 
-    for i = 0, frameCount - 1 do
-        local framePath = frameBasePath .. i .. ".png"
-        if isfile and isfile(framePath) then
-            local frameAsset = getAsset(framePath)
-            if frameAsset then
-                local frameLabel = Instance.new("ImageLabel")
-                frameLabel.Name = "Frame_" .. i
-                frameLabel.Size = UDim2.new(1, 0, 1, 0)
-                frameLabel.BackgroundTransparency = 1
-                frameLabel.Image = frameAsset
-                frameLabel.ScaleType = Enum.ScaleType.Stretch
-                frameLabel.Visible = (i == 0)
-                frameLabel.ZIndex = -1
-                frameLabel.Parent = parentFrame
-                local bgCorner = Instance.new("UICorner")
-                bgCorner.CornerRadius = UDim.new(0, 8)
-                bgCorner.Parent = frameLabel
-                frameLabels[i] = frameLabel
+    -- Preferred: pre-downloaded frame assets from Supabase frame_urls
+    if type(config.frameAssets) == "table" and #config.frameAssets >= 1 then
+        for i = 1, #config.frameAssets do
+            local frameLabel = Instance.new("ImageLabel")
+            frameLabel.Name = "Frame_" .. (i - 1)
+            frameLabel.Size = UDim2.new(1, 0, 1, 0)
+            frameLabel.BackgroundTransparency = 1
+            frameLabel.Image = config.frameAssets[i]
+            frameLabel.ScaleType = Enum.ScaleType.Stretch
+            frameLabel.Visible = (i == 1)
+            frameLabel.ZIndex = -1
+            frameLabel.Parent = parentFrame
+            local bgCorner = Instance.new("UICorner")
+            bgCorner.CornerRadius = UDim.new(0, 8)
+            bgCorner.Parent = frameLabel
+            labels[#labels + 1] = frameLabel
+        end
+    elseif config.isAnimated and (config.frameCount or 0) > 1 and config.frameBasePath then
+        local frameBasePath = config.frameBasePath or ""
+        local frameCount = config.frameCount or 1
+        for i = 0, frameCount - 1 do
+            local framePath = frameBasePath .. i .. ".png"
+            if isfile and isfile(framePath) then
+                local frameAsset = getAsset(framePath)
+                if frameAsset then
+                    local frameLabel = Instance.new("ImageLabel")
+                    frameLabel.Name = "Frame_" .. i
+                    frameLabel.Size = UDim2.new(1, 0, 1, 0)
+                    frameLabel.BackgroundTransparency = 1
+                    frameLabel.Image = frameAsset
+                    frameLabel.ScaleType = Enum.ScaleType.Stretch
+                    frameLabel.Visible = (#labels == 0)
+                    frameLabel.ZIndex = -1
+                    frameLabel.Parent = parentFrame
+                    local bgCorner = Instance.new("UICorner")
+                    bgCorner.CornerRadius = UDim.new(0, 8)
+                    bgCorner.Parent = frameLabel
+                    labels[#labels + 1] = frameLabel
+                end
             end
         end
     end
-    if next(frameLabels) == nil then return end
-    frameLabelsRegistry[parentFrame] = frameLabels
 
-    local currentFrame    = 0
+    if #labels == 0 then return end
+    local registry = {}
+    for i = 1, #labels do registry[i - 1] = labels[i] end
+    frameLabelsRegistry[parentFrame] = registry
+
+    if #labels == 1 then return end
+
+    local currentFrame    = 1
     local lastFrameUpdate = tick()
     local frameTime       = config.frameTime or 0.1
+    local frameCount      = #labels
 
     local hb = RunService.Heartbeat:Connect(function()
         if not parentFrame or not parentFrame.Parent then return end
         local now = tick()
         if now - lastFrameUpdate >= frameTime then
-            if frameLabels[currentFrame] then frameLabels[currentFrame].Visible = false end
-            currentFrame = (currentFrame + 1) % frameCount
+            labels[currentFrame].Visible = false
+            currentFrame = currentFrame % frameCount + 1
             lastFrameUpdate = now
-            if frameLabels[currentFrame] then frameLabels[currentFrame].Visible = true end
+            labels[currentFrame].Visible = true
         end
     end)
     frameAnimationConnections[parentFrame] = { hb }
@@ -1524,7 +1656,7 @@ local function buildPrismBillboard(player, config, head, isSelf)
 
         startSpritesheetAnimation(bgImage, config)
 
-    elseif config and config.isAnimated and config.frameBasePath then
+    elseif config and ((config.frameAssets and #config.frameAssets >= 1) or (config.isAnimated and config.frameBasePath)) then
         startFrameAnimation(frame, config)
 
     elseif config and config.imagePath and isfile and isfile(config.imagePath) then
