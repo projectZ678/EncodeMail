@@ -1785,63 +1785,95 @@ function divisorsOf(n, maxD){
   return out;
 }
 
+/** Best column count for a 1-row horizontal strip (frame height = sheet height). */
+function bestStripCols(W, H){
+  const target = Math.max(1, Math.round(W / H));
+  const candidates = new Set([target, target - 1, target + 1, target - 2, target + 2]);
+  for(const c of divisorsOf(W, 64)){
+    if(Math.abs(c - target) <= 6) candidates.add(c);
+  }
+  let bestC = Math.max(1, target);
+  let bestScore = Infinity;
+  for(const c of candidates){
+    if(c < 1 || c > 64) continue;
+    const fw = W / c;
+    if(fw < 4) continue;
+    const exact = (W % c === 0) ? 0 : 0.4;
+    const square = Math.abs(fw - H) / Math.max(fw, H);
+    const score = square + exact;
+    if(score < bestScore){ bestScore = score; bestC = c; }
+  }
+  return bestC;
+}
+
+/** Best row count for a 1-column vertical strip (frame width = sheet width). */
+function bestStripRows(W, H){
+  const target = Math.max(1, Math.round(H / W));
+  const candidates = new Set([target, target - 1, target + 1, target - 2, target + 2]);
+  for(const r of divisorsOf(H, 64)){
+    if(Math.abs(r - target) <= 6) candidates.add(r);
+  }
+  let bestR = Math.max(1, target);
+  let bestScore = Infinity;
+  for(const r of candidates){
+    if(r < 1 || r > 64) continue;
+    const fh = H / r;
+    if(fh < 4) continue;
+    const exact = (H % r === 0) ? 0 : 0.4;
+    const square = Math.abs(fh - W) / Math.max(fh, W);
+    const score = square + exact;
+    if(score < bestScore){ bestScore = score; bestR = r; }
+  }
+  return bestR;
+}
+
 /**
- * Auto-detect a uniform frame grid from image dimensions.
- * Prefers near-square cells that divide the sheet evenly, 2–64 frames.
+ * Auto-detect frame grid. Prefers single-row horizontal or single-column vertical
+ * strips so playback steps one frame at a time (not a vertical "scroll").
  */
 function autoDetectGrid(naturalW, naturalH){
   const W = Math.max(1, naturalW|0);
   const H = Math.max(1, naturalH|0);
-  const colOptions = divisorsOf(W, 64);
-  const rowOptions = divisorsOf(H, 64);
+  const ratio = W / H;
 
+  // Wide sheet → horizontal strip (1 row)
+  if(ratio >= 1.25){
+    const cols = bestStripCols(W, H);
+    return { cols, rows: 1, fw: Math.floor(W / cols), fh: H, total: cols, auto: true };
+  }
+
+  // Tall sheet → vertical strip (1 column)
+  if(ratio <= 0.8){
+    const rows = bestStripRows(W, H);
+    return { cols: 1, rows, fw: W, fh: Math.floor(H / rows), total: rows, auto: true };
+  }
+
+  // Near-square: grid of near-square cells only
+  const colOptions = divisorsOf(W, 32);
+  const rowOptions = divisorsOf(H, 32);
   let best = null;
   let bestScore = Infinity;
-
   for(const cols of colOptions){
     for(const rows of rowOptions){
       const total = cols * rows;
-      if(total < 1 || total > 128) continue;
+      if(total < 2 || total > 64) continue;
       const fw = W / cols;
       const fh = H / rows;
       if(fw < 4 || fh < 4) continue;
-
-      // How square is each cell? (0 = perfect square)
       const square = Math.abs(fw - fh) / Math.max(fw, fh);
-
-      // Prefer more frames for animation, but not extreme
-      const countBias = total === 1 ? 2.5 : (total > 64 ? (total - 64) * 0.02 : 0);
-
-      // Slight preference for horizontal strips (common for nametag sheets)
-      const stripBonus = (rows === 1 && cols >= 2) ? -0.08 : 0;
-
-      // Prefer cells not extremely wide/tall
-      const aspect = Math.max(fw, fh) / Math.min(fw, fh);
-      const aspectPen = aspect > 3 ? (aspect - 3) * 0.15 : 0;
-
-      const score = square * 2 + countBias + aspectPen + stripBonus;
-
-      // Tie-break: more frames, then more columns
-      if(score < bestScore - 1e-6
-        || (Math.abs(score - bestScore) < 1e-6 && total > (best ? best.total : 0))
-        || (Math.abs(score - bestScore) < 1e-6 && total === (best ? best.total : 0) && cols > (best ? best.cols : 0))){
+      if(square > 0.4) continue;
+      const score = square + (total > 36 ? (total - 36) * 0.01 : 0);
+      if(score < bestScore){
         bestScore = score;
         best = { cols, rows, fw: Math.floor(fw), fh: Math.floor(fh), total, auto: true };
       }
     }
   }
-
   if(best) return best;
 
-  // Fallback: single-row strip using height as frame size
-  if(W >= H){
-    const cols = Math.max(1, Math.round(W / H));
-    const fw = Math.floor(W / cols);
-    return { cols, rows: 1, fw, fh: H, total: cols, auto: true };
-  }
-  const rows = Math.max(1, Math.round(H / W));
-  const fh = Math.floor(H / rows);
-  return { cols: 1, rows, fw: W, fh, total: rows, auto: true };
+  // Fallback horizontal strip
+  const cols = bestStripCols(W, H);
+  return { cols, rows: 1, fw: Math.floor(W / cols), fh: H, total: cols, auto: true };
 }
 
 /** Resolve columns/rows/frame size from draft + natural image size (auto-fits when unset) */
@@ -1855,6 +1887,7 @@ function resolveSheetGrid(d, naturalW, naturalH){
   const hasRows = rows > 0;
   const hasFw = fw > 0;
   const hasFh = fh > 0;
+  const ratio = naturalW / Math.max(1, naturalH);
 
   // Nothing set → full auto-detect
   if(!hasCols && !hasRows && !hasFw && !hasFh){
@@ -1865,7 +1898,6 @@ function resolveSheetGrid(d, naturalW, naturalH){
   if(hasFw && hasFh){
     cols = hasCols ? cols : Math.max(1, Math.floor(naturalW / fw));
     rows = hasRows ? rows : Math.max(1, Math.floor(naturalH / fh));
-    // Re-snap so cells cover the sheet without gaps
     fw = Math.floor(naturalW / cols);
     fh = Math.floor(naturalH / rows);
   } else if(hasCols && hasRows){
@@ -1873,37 +1905,70 @@ function resolveSheetGrid(d, naturalW, naturalH){
     fh = Math.floor(naturalH / rows);
   } else if(hasCols){
     fw = Math.floor(naturalW / cols);
-    // auto rows for near-square cells
     if(hasFh){
       rows = Math.max(1, Math.floor(naturalH / fh));
     } else {
-      rows = Math.max(1, Math.round(naturalH / fw));
-      fh = Math.floor(naturalH / rows);
+      // wide sheets stay 1-row when only columns given
+      if(ratio >= 1.25){
+        rows = 1;
+        fh = naturalH;
+        fw = Math.floor(naturalW / cols);
+      } else {
+        rows = Math.max(1, Math.round(naturalH / fw));
+        fh = Math.floor(naturalH / rows);
+      }
     }
   } else if(hasRows){
     fh = Math.floor(naturalH / rows);
     if(hasFw){
       cols = Math.max(1, Math.floor(naturalW / fw));
+    } else if(ratio <= 0.8){
+      cols = 1;
+      fw = naturalW;
+      fh = Math.floor(naturalH / rows);
     } else {
       cols = Math.max(1, Math.round(naturalW / fh));
       fw = Math.floor(naturalW / cols);
     }
   } else if(hasFw){
     cols = Math.max(1, Math.floor(naturalW / fw));
-    rows = hasRows ? rows : Math.max(1, Math.round(naturalH / fw));
-    fh = Math.floor(naturalH / rows);
-    fw = Math.floor(naturalW / cols);
+    if(ratio >= 1.25){
+      rows = 1;
+      fh = naturalH;
+      fw = Math.floor(naturalW / cols);
+    } else {
+      rows = Math.max(1, Math.round(naturalH / fw));
+      fh = Math.floor(naturalH / rows);
+      fw = Math.floor(naturalW / cols);
+    }
   } else if(hasFh){
     rows = Math.max(1, Math.floor(naturalH / fh));
-    cols = hasCols ? cols : Math.max(1, Math.round(naturalW / fh));
-    fw = Math.floor(naturalW / cols);
-    fh = Math.floor(naturalH / rows);
+    if(ratio <= 0.8){
+      cols = 1;
+      fw = naturalW;
+      fh = Math.floor(naturalH / rows);
+    } else {
+      cols = Math.max(1, Math.round(naturalW / fh));
+      fw = Math.floor(naturalW / cols);
+      fh = Math.floor(naturalH / rows);
+    }
   }
 
   cols = Math.max(1, cols|0);
   rows = Math.max(1, rows|0);
   fw = Math.max(1, fw|0);
   fh = Math.max(1, fh|0);
+
+  // Fix bad grids that cause a vertical "scroll" on wide sheets
+  // (many thin rows instead of side-by-side frames)
+  if(ratio >= 1.25 && rows > 1 && cols <= 2){
+    return autoDetectGrid(naturalW, naturalH);
+  }
+  // Fix bad grids on tall sheets (many skinny columns)
+  if(ratio <= 0.8 && cols > 1 && rows <= 2){
+    return autoDetectGrid(naturalW, naturalH);
+  }
+
   return { cols, rows, fw, fh, total: cols * rows, auto: false };
 }
 
@@ -1912,11 +1977,13 @@ function paintSheetFrame(ctx, img, frameIndex, cols, fw, fh, cw, ch){
   const row = Math.floor(frameIndex / cols);
   const sx = col * fw;
   const sy = row * fh;
-  // cover-fit destination
-  const scale = Math.max(cw / fw, ch / fh);
+  // contain-fit so the full frame is visible (no crop that looks like scrolling)
+  const scale = Math.min(cw / fw, ch / fh);
   const dw = fw * scale, dh = fh * scale;
   const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
   ctx.clearRect(0, 0, cw, ch);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(img, sx, sy, fw, fh, dx, dy, dw, dh);
 }
 
@@ -1966,10 +2033,8 @@ function mountSpritesheetBackground(tag, d, br, cssW, cssH){
     if(token !== sheetAnimToken) return;
     const grid = resolveSheetGrid(d, img.naturalWidth, img.naturalHeight);
 
-    // Auto-fill empty grid fields so the form matches what is playing (once per URL)
-    const wasEmpty = !num(d.spritesheet_columns) && !num(d.spritesheet_rows)
-      && !num(d.spritesheet_frame_width) && !num(d.spritesheet_frame_height);
-    if(wasEmpty && d._sheetAutoFor !== url){
+    // Write detected grid into the form when auto-detected or when fixing a bad grid
+    if(grid.auto || d._sheetAutoFor !== url){
       d._sheetAutoFor = url;
       d.spritesheet_columns = grid.cols;
       d.spritesheet_rows = grid.rows;
@@ -1978,14 +2043,10 @@ function mountSpritesheetBackground(tag, d, br, cssW, cssH){
       if(!num(d.spritesheet_frame_time)) d.spritesheet_frame_time = 0.1;
       if(state.draft === d){
         markDirty();
-        // light UI sync: update open spritesheet section inputs if present
-        const root = $('#editorBody');
-        if(root){
-          const open = new Set(state.openSections);
-          open.add('spritesheet');
-          state.openSections = open;
-          renderEditor();
-        }
+        const open = new Set(state.openSections);
+        open.add('spritesheet');
+        state.openSections = open;
+        renderEditor();
       }
     }
 
