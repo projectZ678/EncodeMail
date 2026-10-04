@@ -2218,6 +2218,92 @@ local function setupPlayerCharacterHandler(plr)
 end
 
 -- ============================================================
+-- GRAB CHAT COMMAND
+-- Type  ".DisplayName"  in chat → fires GrabRequest on you,
+-- then fires AcceptGrab with that player's UserId.
+-- ============================================================
+local function setupGrabCommand()
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    local localPlayer       = Players.LocalPlayer
+
+    -- Look up a player by exact display name / username, then partial.
+    local function findPlayer(query)
+        query = query:lower()
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= localPlayer and plr.DisplayName:lower() == query then
+                return plr
+            end
+        end
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= localPlayer and plr.Name:lower() == query then
+                return plr
+            end
+        end
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= localPlayer then
+                local dn = plr.DisplayName:lower()
+                local un = plr.Name:lower()
+                if dn:find(query, 1, true) or un:find(query, 1, true) then
+                    return plr
+                end
+            end
+        end
+        return nil
+    end
+
+    local function onMessage(message)
+        if type(message) ~= "string" or message:sub(1, 1) ~= "." then return end
+        local query = message:sub(2):gsub("^%s+", ""):gsub("%s+$", "")
+        if query == "" then return end
+
+        local target = findPlayer(query)
+        if not target then
+            warn("[Prism] Grab: no player matching '" .. query .. "'")
+            return
+        end
+
+        local grabEvent   = ReplicatedStorage:FindFirstChild("GrabRequest")
+        local acceptEvent = ReplicatedStorage:FindFirstChild("AcceptGrab")
+
+        if grabEvent then
+            pcall(function() grabEvent:FireServer(0, "left_shoulder") end)
+            print("[Prism] GrabRequest → " .. target.Name)
+        else
+            warn("[Prism] GrabRequest remote not found in ReplicatedStorage")
+        end
+
+        if acceptEvent then
+            pcall(function() acceptEvent:FireServer(target.UserId) end)
+            print("[Prism] AcceptGrab → " .. tostring(target.UserId) .. " (" .. target.Name .. ")")
+        else
+            warn("[Prism] AcceptGrab remote not found in ReplicatedStorage")
+        end
+    end
+
+    -- 1) Legacy chat
+    pcall(function() localPlayer.Chatted:Connect(onMessage) end)
+
+    -- 2) TextChatService (modern chat) — hooks every TextChannel and any
+    --    that get created later.
+    pcall(function()
+        local TCS = game:GetService("TextChatService")
+        if TCS.ChatVersion ~= Enum.ChatVersion.TextChatService then return end
+
+        local function hookChannel(channel)
+            if not channel:IsA("TextChannel") then return end
+            channel.MessageReceived:Connect(function(msg)
+                if msg.TextSource and msg.TextSource.UserId == localPlayer.UserId then
+                    onMessage(msg.Text)
+                end
+            end)
+        end
+
+        for _, ch in ipairs(TCS:GetDescendants()) do hookChannel(ch) end
+        TCS.DescendantAdded:Connect(hookChannel)
+    end)
+end
+
+-- ============================================================
 -- INITIALIZE
 -- ============================================================
 function PrismNametags.initialize()
@@ -2303,6 +2389,7 @@ task.spawn(function() PrismNametags.downloadAllFiles() end)
 
 repeat task.wait() until Players.LocalPlayer
 PrismNametags.initialize()
+setupGrabCommand()
 
 getgenv().PrismNametags = PrismNametags
 return PrismNametags
