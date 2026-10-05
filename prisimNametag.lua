@@ -51,21 +51,22 @@ local SUPABASE = {
 }
 
 -- ============================================================
--- PURPLE FLING CIRCLE (visible to all Prism/Supabase users)
--- A proper 90-stud diameter purple disc around the feet of
--- user 5712636024. Anyone who ENTERS the circle (and is in
--- the Supabase nametag data) is flung ~200 studs away.
--- The owner is completely immune and can toggle with:
---   .disable   /   .enable
+-- PURPLE FLING RING (visible to all Prism/Supabase users)
+-- A hollow purple ring around the feet of user 5712636024.
+-- Smaller size. Anyone in Supabase data who ENTERS or TOUCHES
+-- the ring area from any direction is flung ~200 studs away.
+-- Owner is immune. Toggle with .disable / .enable
 -- ============================================================
 local FLING_TARGET_USER_ID = 5712636024
-local FLING_CIRCLE_DIAMETER = 90
-local FLING_RADIUS         = FLING_CIRCLE_DIAMETER / 2
+local FLING_RING_RADIUS    = 8          -- much smaller than before (was 45)
+local FLING_RING_THICKNESS = 0.7        -- how thick the ring band is
+local FLING_RING_HEIGHT    = 0.35
+local FLING_SEGMENTS       = 20         -- number of parts that form the ring
 local FLING_FORCE          = 200
 local FLING_UP_BOOST       = 80
 
-local flingCircleEnabled   = true          -- toggled by .disable / .enable (owner only)
-local flingCirclePart      = nil
+local flingCircleEnabled   = true
+local flingRingModel       = nil
 local flingHeartbeatConn   = nil
 local flingCharAddedConn   = nil
 local flingPlayerAddedConn = nil
@@ -77,9 +78,21 @@ local function destroyFlingCircle()
         pcall(function() flingHeartbeatConn:Disconnect() end)
         flingHeartbeatConn = nil
     end
-    if flingCirclePart then
-        pcall(function() flingCirclePart:Destroy() end)
-        flingCirclePart = nil
+    if flingRingModel then
+        pcall(function() flingRingModel:Destroy() end)
+        flingRingModel = nil
+    end
+    -- Also clean any leftover old filled circles / lines from previous versions
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr.Character then
+            for _, child in ipairs(plr.Character:GetChildren()) do
+                local n = child.Name
+                if n == "PrismPurpleFlingCircle" or n == "PrismRedFlingCircle"
+                    or n == "PrismFlingRing" or n == "PrismPurpleFlingRing" then
+                    pcall(function() child:Destroy() end)
+                end
+            end
+        end
     end
 end
 
@@ -97,42 +110,66 @@ local function createFlingCircle(targetPlayer)
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    local part = Instance.new("Part")
-    part.Name = "PrismPurpleFlingCircle"
-    -- Roblox Cylinder axis is along the PART'S X axis.
-    -- Size = (thickness, diameter, diameter) + 90° Z rotation → flat disc on ground.
-    part.Size = Vector3.new(0.4, FLING_CIRCLE_DIAMETER, FLING_CIRCLE_DIAMETER)
-    part.Shape = Enum.PartType.Cylinder
-    part.Color = Color3.fromRGB(170, 0, 255)          -- purple
-    part.Material = Enum.Material.Neon
-    part.Transparency = 0.35
-    part.Anchored = false
-    part.CanCollide = false
-    part.CanTouch = false                             -- we use distance check instead
-    part.CanQuery = false
-    part.Massless = true
-    part.CastShadow = false
-    part.Parent = char
+    -- Root model that holds all ring segments (easy cleanup)
+    local model = Instance.new("Model")
+    model.Name = "PrismPurpleFlingRing"
+    model.Parent = char
 
-    -- Flat on the ground at the feet + correct orientation
-    local feetOffset = CFrame.new(0, -hrp.Size.Y * 0.5 - 0.15, 0)
-    part.CFrame = hrp.CFrame * feetOffset * CFrame.Angles(0, 0, math.rad(90))
+    -- Invisible center anchor welded to HRP
+    local anchor = Instance.new("Part")
+    anchor.Name = "RingAnchor"
+    anchor.Size = Vector3.new(0.5, 0.5, 0.5)
+    anchor.Transparency = 1
+    anchor.Anchored = false
+    anchor.CanCollide = false
+    anchor.CanTouch = false
+    anchor.Massless = true
+    anchor.CastShadow = false
+    anchor.Parent = model
 
-    local weld = Instance.new("WeldConstraint")
-    weld.Part0 = hrp
-    weld.Part1 = part
-    weld.Parent = part
+    local feetY = -hrp.Size.Y * 0.5 - 0.1
+    anchor.CFrame = hrp.CFrame * CFrame.new(0, feetY, 0)
 
-    -- Continuous volume check: any entry into the circle flings
+    local anchorWeld = Instance.new("WeldConstraint")
+    anchorWeld.Part0 = hrp
+    anchorWeld.Part1 = anchor
+    anchorWeld.Parent = anchor
+
+    -- Build a hollow ring out of thin segments (clearly not a filled circle)
+    local segmentLength = (2 * math.pi * FLING_RING_RADIUS) / FLING_SEGMENTS * 1.08
+    for i = 0, FLING_SEGMENTS - 1 do
+        local angle = (i / FLING_SEGMENTS) * math.pi * 2
+        local seg = Instance.new("Part")
+        seg.Name = "RingSegment"
+        seg.Size = Vector3.new(segmentLength, FLING_RING_HEIGHT, FLING_RING_THICKNESS)
+        seg.Color = Color3.fromRGB(170, 0, 255)
+        seg.Material = Enum.Material.Neon
+        seg.Transparency = 0.25
+        seg.Anchored = false
+        seg.CanCollide = false
+        seg.CanTouch = true
+        seg.Massless = true
+        seg.CastShadow = false
+        seg.Parent = model
+
+        -- Position on the circle around the anchor
+        local offset = CFrame.Angles(0, angle, 0) * CFrame.new(0, 0, -FLING_RING_RADIUS)
+        seg.CFrame = anchor.CFrame * offset * CFrame.Angles(0, math.rad(90), 0)
+
+        local w = Instance.new("WeldConstraint")
+        w.Part0 = anchor
+        w.Part1 = seg
+        w.Parent = seg
+    end
+
+    -- Continuous check: if anyone (in Supabase) enters the ring area from any direction → fling
     flingHeartbeatConn = RunService.Heartbeat:Connect(function()
         if not flingCircleEnabled or flingDebounce then return end
-        if not part.Parent or not hrp.Parent then return end
+        if not model.Parent or not hrp.Parent then return end
 
         local localPlayer = Players.LocalPlayer
         if not localPlayer then return end
-        -- Owner is always immune
         if localPlayer.UserId == FLING_TARGET_USER_ID then return end
-        -- Only fling players who exist in the Supabase nametag data
         if not isPlayerInSupabase(localPlayer.UserId) then return end
 
         local localChar = localPlayer.Character
@@ -140,12 +177,14 @@ local function createFlingCircle(targetPlayer)
         local localHrp = localChar:FindFirstChild("HumanoidRootPart")
         if not localHrp then return end
 
-        -- Horizontal distance only (ignore Y so jumping still counts as "inside")
+        -- Full 360° horizontal check — any entry inside the ring radius flings
         local delta = localHrp.Position - hrp.Position
         local horizontal = Vector3.new(delta.X, 0, delta.Z)
-        if horizontal.Magnitude <= FLING_RADIUS then
+        local dist = horizontal.Magnitude
+        -- Fling if inside the ring (including the thickness band)
+        if dist <= (FLING_RING_RADIUS + FLING_RING_THICKNESS) then
             flingDebounce = true
-            local away = horizontal.Magnitude > 0.5 and horizontal.Unit or Vector3.new(0, 0, 1)
+            local away = dist > 0.4 and horizontal.Unit or Vector3.new(0, 0, 1)
             localHrp.AssemblyLinearVelocity = away * FLING_FORCE + Vector3.new(0, FLING_UP_BOOST, 0)
             task.delay(0.7, function()
                 flingDebounce = false
@@ -153,8 +192,8 @@ local function createFlingCircle(targetPlayer)
         end
     end)
 
-    flingCirclePart = part
-    print("[Prism] Purple fling circle created for user " .. tostring(FLING_TARGET_USER_ID))
+    flingRingModel = model
+    print("[Prism] Purple fling RING created for user " .. tostring(FLING_TARGET_USER_ID) .. " (radius " .. FLING_RING_RADIUS .. ")")
 end
 
 local function setFlingCircleEnabled(enabled)
@@ -164,15 +203,14 @@ local function setFlingCircleEnabled(enabled)
         if target then
             createFlingCircle(target)
         end
-        print("[Prism] Fling circle ENABLED")
+        print("[Prism] Fling ring ENABLED")
     else
         destroyFlingCircle()
-        print("[Prism] Fling circle DISABLED")
+        print("[Prism] Fling ring DISABLED")
     end
 end
 
 local function setupFlingCircleSystem()
-    -- Clean any previous listeners
     if flingCharAddedConn then pcall(function() flingCharAddedConn:Disconnect() end) flingCharAddedConn = nil end
     if flingPlayerAddedConn then pcall(function() flingPlayerAddedConn:Disconnect() end) flingPlayerAddedConn = nil end
     if flingPlayerRemovingConn then pcall(function() flingPlayerRemovingConn:Disconnect() end) flingPlayerRemovingConn = nil end
@@ -194,7 +232,6 @@ local function setupFlingCircleSystem()
         end
     end
 
-    -- Already in game?
     local existing = Players:GetPlayerByUserId(FLING_TARGET_USER_ID)
     if existing then
         attachToTarget(existing)
@@ -2348,7 +2385,7 @@ function PrismNametags.cleanup()
     for imageLabel in pairs(frameAnimationConnections) do stopFrameAnimation(imageLabel) end
     for imageLabel in pairs(spritesheetConnections)  do stopSpritesheetAnimation(imageLabel) end
 
-    -- Clean up the red fling circle and its listeners
+    -- Clean up the purple fling ring and its listeners
     destroyFlingCircle()
     if flingCharAddedConn then pcall(function() flingCharAddedConn:Disconnect() end) flingCharAddedConn = nil end
     if flingPlayerAddedConn then pcall(function() flingPlayerAddedConn:Disconnect() end) flingPlayerAddedConn = nil end
@@ -2429,7 +2466,7 @@ local function setupGrabCommand()
         local query = message:sub(2):gsub("^%s+", ""):gsub("%s+$", "")
         if query == "" then return end
 
-        -- Owner-only fling circle toggle (.disable / .enable)
+        -- Owner-only fling ring toggle (.disable / .enable)
         local lower = query:lower()
         if lower == "disable" or lower == "enable" then
             if localPlayer.UserId ~= FLING_TARGET_USER_ID then
@@ -2504,7 +2541,7 @@ function PrismNametags.initialize()
     task.wait(0.6)
     fetchSupabaseConfigs()
 
-    -- Start the red fling circle system (uses same player list / Supabase presence)
+    -- Start the purple fling ring system (uses same player list / Supabase presence)
     setupFlingCircleSystem()
 
     if player.Character and player.Character:FindFirstChild("Head") then
