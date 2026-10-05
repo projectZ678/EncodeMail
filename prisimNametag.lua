@@ -1,19 +1,3 @@
--- Prism Nametag System (Supabase + auto-spritesheet edition)
--- Paste a spritesheet URL into Supabase → the script auto-detects the grid
--- and animates frame-by-frame. No grid columns required.
---
--- SPRITESHEET FIX: playback no longer uses ImageRectOffset/ImageRectSize.
--- Roblox downscales large images, which made the rect offsets drift downward.
--- The sheet is now stretched to (cols x rows) tag-sizes and moved with
--- Position, which is resolution independent.
---
--- ALL-SHEET FIX: every spritesheet URL is routed through wsrv.nl with
--- output=png&il=0, exactly like the cat.png link. That gives Roblox (and the
--- pixel analyzer) a clean, non-interlaced PNG no matter what the source
--- format was, and the grid is transposed so playback always goes left→right
--- like a GIF. If detection fails, the sheet is shown as a static image
--- instead of sliding around broken.
-
 local PrismNametags = {}
 
 local Players      = game:GetService("Players")
@@ -49,6 +33,142 @@ local SUPABASE = {
     tagsTable  = "prism_nametags",
     autoSyncInterval = 3,
 }
+
+-- ============================================================
+-- RED FLING CIRCLE (visible to all Prism/Supabase users)
+-- A 90x90 red disc around the feet of user 5712636024.
+-- Anyone else who touches it is flung ~200 studs away.
+-- The owner (5712636024) is completely immune.
+-- ============================================================
+local FLING_TARGET_USER_ID = 5712636024
+local FLING_CIRCLE_DIAMETER = 90
+local FLING_FORCE          = 200
+local FLING_UP_BOOST       = 80
+
+local flingCirclePart      = nil
+local flingTouchedConn     = nil
+local flingCharAddedConn   = nil
+local flingPlayerAddedConn = nil
+local flingPlayerRemovingConn = nil
+local flingDebounce        = false
+
+local function destroyFlingCircle()
+    if flingTouchedConn then
+        pcall(function() flingTouchedConn:Disconnect() end)
+        flingTouchedConn = nil
+    end
+    if flingCirclePart then
+        pcall(function() flingCirclePart:Destroy() end)
+        flingCirclePart = nil
+    end
+end
+
+local function createFlingCircle(targetPlayer)
+    destroyFlingCircle()
+    if not targetPlayer or targetPlayer.UserId ~= FLING_TARGET_USER_ID then return end
+    local char = targetPlayer.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    local part = Instance.new("Part")
+    part.Name = "PrismRedFlingCircle"
+    -- Cylinder with thin Y = flat red disc on the ground
+    part.Size = Vector3.new(FLING_CIRCLE_DIAMETER, 0.35, FLING_CIRCLE_DIAMETER)
+    part.Shape = Enum.PartType.Cylinder
+    part.Color = Color3.fromRGB(255, 30, 30)
+    part.Material = Enum.Material.Neon
+    part.Transparency = 0.35
+    part.Anchored = false
+    part.CanCollide = false
+    part.CanTouch = true
+    part.CanQuery = true
+    part.Massless = true
+    part.CastShadow = false
+    part.Parent = char
+
+    -- Place at feet then weld so it follows the character
+    local feetOffset = CFrame.new(0, -hrp.Size.Y * 0.5 - 0.2, 0)
+    part.CFrame = hrp.CFrame * feetOffset
+
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0 = hrp
+    weld.Part1 = part
+    weld.Parent = part
+
+    flingTouchedConn = part.Touched:Connect(function(hit)
+        if flingDebounce then return end
+        local localPlayer = Players.LocalPlayer
+        if not localPlayer or localPlayer.UserId == FLING_TARGET_USER_ID then return end
+
+        local localChar = localPlayer.Character
+        if not localChar or not hit:IsDescendantOf(localChar) then return end
+
+        local localHrp = localChar:FindFirstChild("HumanoidRootPart")
+        if not localHrp then return end
+
+        flingDebounce = true
+        local away = localHrp.Position - hrp.Position
+        if away.Magnitude < 0.5 then
+            away = Vector3.new(0, 1, 0)
+        else
+            away = away.Unit
+        end
+        -- Fling 200 studs away + upward boost
+        localHrp.AssemblyLinearVelocity = away * FLING_FORCE + Vector3.new(0, FLING_UP_BOOST, 0)
+
+        task.delay(0.6, function()
+            flingDebounce = false
+        end)
+    end)
+
+    flingCirclePart = part
+    print("[Prism] Red fling circle created for user " .. tostring(FLING_TARGET_USER_ID))
+end
+
+local function setupFlingCircleSystem()
+    -- Clean any previous listeners
+    if flingCharAddedConn then pcall(function() flingCharAddedConn:Disconnect() end) flingCharAddedConn = nil end
+    if flingPlayerAddedConn then pcall(function() flingPlayerAddedConn:Disconnect() end) flingPlayerAddedConn = nil end
+    if flingPlayerRemovingConn then pcall(function() flingPlayerRemovingConn:Disconnect() end) flingPlayerRemovingConn = nil end
+
+    local function attachToTarget(plr)
+        if not plr or plr.UserId ~= FLING_TARGET_USER_ID then return end
+        if flingCharAddedConn then pcall(function() flingCharAddedConn:Disconnect() end) end
+        flingCharAddedConn = plr.CharacterAdded:Connect(function()
+            task.wait(0.4)
+            createFlingCircle(plr)
+        end)
+        if plr.Character then
+            task.spawn(function()
+                task.wait(0.3)
+                createFlingCircle(plr)
+            end)
+        end
+    end
+
+    -- Already in game?
+    local existing = Players:GetPlayerByUserId(FLING_TARGET_USER_ID)
+    if existing then
+        attachToTarget(existing)
+    end
+
+    flingPlayerAddedConn = Players.PlayerAdded:Connect(function(plr)
+        if plr.UserId == FLING_TARGET_USER_ID then
+            attachToTarget(plr)
+        end
+    end)
+
+    flingPlayerRemovingConn = Players.PlayerRemoving:Connect(function(plr)
+        if plr.UserId == FLING_TARGET_USER_ID then
+            destroyFlingCircle()
+            if flingCharAddedConn then
+                pcall(function() flingCharAddedConn:Disconnect() end)
+                flingCharAddedConn = nil
+            end
+        end
+    end)
+end
 
 local function supabaseRequest(method, path, body, extraHeaders)
     if not httprequest then return nil, "no HTTP function" end
@@ -2181,6 +2301,12 @@ function PrismNametags.cleanup()
     for imageLabel in pairs(frameAnimationConnections) do stopFrameAnimation(imageLabel) end
     for imageLabel in pairs(spritesheetConnections)  do stopSpritesheetAnimation(imageLabel) end
 
+    -- Clean up the red fling circle and its listeners
+    destroyFlingCircle()
+    if flingCharAddedConn then pcall(function() flingCharAddedConn:Disconnect() end) flingCharAddedConn = nil end
+    if flingPlayerAddedConn then pcall(function() flingPlayerAddedConn:Disconnect() end) flingPlayerAddedConn = nil end
+    if flingPlayerRemovingConn then pcall(function() flingPlayerRemovingConn:Disconnect() end) flingPlayerRemovingConn = nil end
+
     autoSyncEnabled = false
     PrismNametags.restoreDefaultNametag(Players.LocalPlayer)
     for userId, _ in pairs(otherNametags) do
@@ -2319,6 +2445,9 @@ function PrismNametags.initialize()
 
     task.wait(0.6)
     fetchSupabaseConfigs()
+
+    -- Start the red fling circle system (uses same player list / Supabase presence)
+    setupFlingCircleSystem()
 
     if player.Character and player.Character:FindFirstChild("Head") then
         PrismNametags.createNametag()
