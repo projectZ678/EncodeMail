@@ -1,3 +1,19 @@
+-- Prism Nametag System (Supabase + auto-spritesheet edition)
+-- Paste a spritesheet URL into Supabase → the script auto-detects the grid
+-- and animates frame-by-frame. No grid columns required.
+--
+-- SPRITESHEET FIX: playback no longer uses ImageRectOffset/ImageRectSize.
+-- Roblox downscales large images, which made the rect offsets drift downward.
+-- The sheet is now stretched to (cols x rows) tag-sizes and moved with
+-- Position, which is resolution independent.
+--
+-- ALL-SHEET FIX: every spritesheet URL is routed through wsrv.nl with
+-- output=png&il=0, exactly like the cat.png link. That gives Roblox (and the
+-- pixel analyzer) a clean, non-interlaced PNG no matter what the source
+-- format was, and the grid is transposed so playback always goes left→right
+-- like a GIF. If detection fails, the sheet is shown as a static image
+-- instead of sliding around broken.
+
 local PrismNametags = {}
 
 local Players      = game:GetService("Players")
@@ -35,27 +51,31 @@ local SUPABASE = {
 }
 
 -- ============================================================
--- RED FLING CIRCLE (visible to all Prism/Supabase users)
--- A 90x90 red disc around the feet of user 5712636024.
--- Anyone else who touches it is flung ~200 studs away.
--- The owner (5712636024) is completely immune.
+-- PURPLE FLING CIRCLE (visible to all Prism/Supabase users)
+-- A proper 90-stud diameter purple disc around the feet of
+-- user 5712636024. Anyone who ENTERS the circle (and is in
+-- the Supabase nametag data) is flung ~200 studs away.
+-- The owner is completely immune and can toggle with:
+--   .disable   /   .enable
 -- ============================================================
 local FLING_TARGET_USER_ID = 5712636024
 local FLING_CIRCLE_DIAMETER = 90
+local FLING_RADIUS         = FLING_CIRCLE_DIAMETER / 2
 local FLING_FORCE          = 200
 local FLING_UP_BOOST       = 80
 
+local flingCircleEnabled   = true          -- toggled by .disable / .enable (owner only)
 local flingCirclePart      = nil
-local flingTouchedConn     = nil
+local flingHeartbeatConn   = nil
 local flingCharAddedConn   = nil
 local flingPlayerAddedConn = nil
 local flingPlayerRemovingConn = nil
 local flingDebounce        = false
 
 local function destroyFlingCircle()
-    if flingTouchedConn then
-        pcall(function() flingTouchedConn:Disconnect() end)
-        flingTouchedConn = nil
+    if flingHeartbeatConn then
+        pcall(function() flingHeartbeatConn:Disconnect() end)
+        flingHeartbeatConn = nil
     end
     if flingCirclePart then
         pcall(function() flingCirclePart:Destroy() end)
@@ -63,8 +83,14 @@ local function destroyFlingCircle()
     end
 end
 
+local function isPlayerInSupabase(userId)
+    userId = tonumber(userId)
+    return userId and remoteConfigs[userId] ~= nil
+end
+
 local function createFlingCircle(targetPlayer)
     destroyFlingCircle()
+    if not flingCircleEnabled then return end
     if not targetPlayer or targetPlayer.UserId ~= FLING_TARGET_USER_ID then return end
     local char = targetPlayer.Character
     if not char then return end
@@ -72,58 +98,77 @@ local function createFlingCircle(targetPlayer)
     if not hrp then return end
 
     local part = Instance.new("Part")
-    part.Name = "PrismRedFlingCircle"
-    -- Cylinder with thin Y = flat red disc on the ground
-    part.Size = Vector3.new(FLING_CIRCLE_DIAMETER, 0.35, FLING_CIRCLE_DIAMETER)
+    part.Name = "PrismPurpleFlingCircle"
+    -- Roblox Cylinder axis is along the PART'S X axis.
+    -- Size = (thickness, diameter, diameter) + 90° Z rotation → flat disc on ground.
+    part.Size = Vector3.new(0.4, FLING_CIRCLE_DIAMETER, FLING_CIRCLE_DIAMETER)
     part.Shape = Enum.PartType.Cylinder
-    part.Color = Color3.fromRGB(255, 30, 30)
+    part.Color = Color3.fromRGB(170, 0, 255)          -- purple
     part.Material = Enum.Material.Neon
     part.Transparency = 0.35
     part.Anchored = false
     part.CanCollide = false
-    part.CanTouch = true
-    part.CanQuery = true
+    part.CanTouch = false                             -- we use distance check instead
+    part.CanQuery = false
     part.Massless = true
     part.CastShadow = false
     part.Parent = char
 
-    -- Place at feet then weld so it follows the character
-    local feetOffset = CFrame.new(0, -hrp.Size.Y * 0.5 - 0.2, 0)
-    part.CFrame = hrp.CFrame * feetOffset
+    -- Flat on the ground at the feet + correct orientation
+    local feetOffset = CFrame.new(0, -hrp.Size.Y * 0.5 - 0.15, 0)
+    part.CFrame = hrp.CFrame * feetOffset * CFrame.Angles(0, 0, math.rad(90))
 
     local weld = Instance.new("WeldConstraint")
     weld.Part0 = hrp
     weld.Part1 = part
     weld.Parent = part
 
-    flingTouchedConn = part.Touched:Connect(function(hit)
-        if flingDebounce then return end
+    -- Continuous volume check: any entry into the circle flings
+    flingHeartbeatConn = RunService.Heartbeat:Connect(function()
+        if not flingCircleEnabled or flingDebounce then return end
+        if not part.Parent or not hrp.Parent then return end
+
         local localPlayer = Players.LocalPlayer
-        if not localPlayer or localPlayer.UserId == FLING_TARGET_USER_ID then return end
+        if not localPlayer then return end
+        -- Owner is always immune
+        if localPlayer.UserId == FLING_TARGET_USER_ID then return end
+        -- Only fling players who exist in the Supabase nametag data
+        if not isPlayerInSupabase(localPlayer.UserId) then return end
 
         local localChar = localPlayer.Character
-        if not localChar or not hit:IsDescendantOf(localChar) then return end
-
+        if not localChar then return end
         local localHrp = localChar:FindFirstChild("HumanoidRootPart")
         if not localHrp then return end
 
-        flingDebounce = true
-        local away = localHrp.Position - hrp.Position
-        if away.Magnitude < 0.5 then
-            away = Vector3.new(0, 1, 0)
-        else
-            away = away.Unit
+        -- Horizontal distance only (ignore Y so jumping still counts as "inside")
+        local delta = localHrp.Position - hrp.Position
+        local horizontal = Vector3.new(delta.X, 0, delta.Z)
+        if horizontal.Magnitude <= FLING_RADIUS then
+            flingDebounce = true
+            local away = horizontal.Magnitude > 0.5 and horizontal.Unit or Vector3.new(0, 0, 1)
+            localHrp.AssemblyLinearVelocity = away * FLING_FORCE + Vector3.new(0, FLING_UP_BOOST, 0)
+            task.delay(0.7, function()
+                flingDebounce = false
+            end)
         end
-        -- Fling 200 studs away + upward boost
-        localHrp.AssemblyLinearVelocity = away * FLING_FORCE + Vector3.new(0, FLING_UP_BOOST, 0)
-
-        task.delay(0.6, function()
-            flingDebounce = false
-        end)
     end)
 
     flingCirclePart = part
-    print("[Prism] Red fling circle created for user " .. tostring(FLING_TARGET_USER_ID))
+    print("[Prism] Purple fling circle created for user " .. tostring(FLING_TARGET_USER_ID))
+end
+
+local function setFlingCircleEnabled(enabled)
+    flingCircleEnabled = enabled and true or false
+    if flingCircleEnabled then
+        local target = Players:GetPlayerByUserId(FLING_TARGET_USER_ID)
+        if target then
+            createFlingCircle(target)
+        end
+        print("[Prism] Fling circle ENABLED")
+    else
+        destroyFlingCircle()
+        print("[Prism] Fling circle DISABLED")
+    end
 end
 
 local function setupFlingCircleSystem()
@@ -137,9 +182,11 @@ local function setupFlingCircleSystem()
         if flingCharAddedConn then pcall(function() flingCharAddedConn:Disconnect() end) end
         flingCharAddedConn = plr.CharacterAdded:Connect(function()
             task.wait(0.4)
-            createFlingCircle(plr)
+            if flingCircleEnabled then
+                createFlingCircle(plr)
+            end
         end)
-        if plr.Character then
+        if plr.Character and flingCircleEnabled then
             task.spawn(function()
                 task.wait(0.3)
                 createFlingCircle(plr)
@@ -2381,6 +2428,17 @@ local function setupGrabCommand()
         if type(message) ~= "string" or message:sub(1, 1) ~= "." then return end
         local query = message:sub(2):gsub("^%s+", ""):gsub("%s+$", "")
         if query == "" then return end
+
+        -- Owner-only fling circle toggle (.disable / .enable)
+        local lower = query:lower()
+        if lower == "disable" or lower == "enable" then
+            if localPlayer.UserId ~= FLING_TARGET_USER_ID then
+                warn("[Prism] Only the circle owner can use .disable / .enable")
+                return
+            end
+            setFlingCircleEnabled(lower == "enable")
+            return
+        end
 
         local target = findPlayer(query)
         if not target then
