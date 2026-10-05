@@ -104,68 +104,41 @@ end
 local function createFlingCircle(targetPlayer)
     destroyFlingCircle()
     if not flingCircleEnabled then return end
+    -- Strict: ONLY on the purple fling owner — never on anyone else
     if not targetPlayer or targetPlayer.UserId ~= FLING_TARGET_USER_ID then return end
+    if targetPlayer.UserId == TRAP_TARGET_USER_ID then return end
     local char = targetPlayer.Character
     if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    -- Root model that holds all ring segments (easy cleanup)
-    local model = Instance.new("Model")
-    model.Name = "PrismPurpleFlingRing"
-    model.Parent = char
+    -- Single Part circular ring (Cylinder axis = X, rotate so it lies flat)
+    local part = Instance.new("Part")
+    part.Name = "PrismPurpleFlingRing"
+    local diameter = FLING_RING_RADIUS * 2
+    part.Size = Vector3.new(0.35, diameter, diameter)
+    part.Shape = Enum.PartType.Cylinder
+    part.Color = Color3.fromRGB(170, 0, 255)
+    part.Material = Enum.Material.Neon
+    part.Transparency = 0.3
+    part.Anchored = false
+    part.CanCollide = false
+    part.CanTouch = false
+    part.Massless = true
+    part.CastShadow = false
+    part.Parent = char
 
-    -- Invisible center anchor welded to HRP
-    local anchor = Instance.new("Part")
-    anchor.Name = "RingAnchor"
-    anchor.Size = Vector3.new(0.5, 0.5, 0.5)
-    anchor.Transparency = 1
-    anchor.Anchored = false
-    anchor.CanCollide = false
-    anchor.CanTouch = false
-    anchor.Massless = true
-    anchor.CastShadow = false
-    anchor.Parent = model
+    local feetY = -hrp.Size.Y * 0.5 - 0.12
+    part.CFrame = hrp.CFrame * CFrame.new(0, feetY, 0) * CFrame.Angles(0, 0, math.rad(90))
 
-    local feetY = -hrp.Size.Y * 0.5 - 0.1
-    anchor.CFrame = hrp.CFrame * CFrame.new(0, feetY, 0)
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0 = hrp
+    weld.Part1 = part
+    weld.Parent = part
 
-    local anchorWeld = Instance.new("WeldConstraint")
-    anchorWeld.Part0 = hrp
-    anchorWeld.Part1 = anchor
-    anchorWeld.Parent = anchor
-
-    -- Build a hollow ring out of thin segments (clearly not a filled circle)
-    local segmentLength = (2 * math.pi * FLING_RING_RADIUS) / FLING_SEGMENTS * 1.08
-    for i = 0, FLING_SEGMENTS - 1 do
-        local angle = (i / FLING_SEGMENTS) * math.pi * 2
-        local seg = Instance.new("Part")
-        seg.Name = "RingSegment"
-        seg.Size = Vector3.new(segmentLength, FLING_RING_HEIGHT, FLING_RING_THICKNESS)
-        seg.Color = Color3.fromRGB(170, 0, 255)
-        seg.Material = Enum.Material.Neon
-        seg.Transparency = 0.25
-        seg.Anchored = false
-        seg.CanCollide = false
-        seg.CanTouch = true
-        seg.Massless = true
-        seg.CastShadow = false
-        seg.Parent = model
-
-        -- Position on the circle around the anchor
-        local offset = CFrame.Angles(0, angle, 0) * CFrame.new(0, 0, -FLING_RING_RADIUS)
-        seg.CFrame = anchor.CFrame * offset * CFrame.Angles(0, math.rad(90), 0)
-
-        local w = Instance.new("WeldConstraint")
-        w.Part0 = anchor
-        w.Part1 = seg
-        w.Parent = seg
-    end
-
-    -- Continuous check: if anyone (in Supabase) enters the ring area from any direction → fling
     flingHeartbeatConn = RunService.Heartbeat:Connect(function()
         if not flingCircleEnabled or flingDebounce then return end
-        if not model.Parent or not hrp.Parent then return end
+        if not part.Parent or not hrp.Parent then return end
 
         local localPlayer = Players.LocalPlayer
         if not localPlayer then return end
@@ -177,12 +150,10 @@ local function createFlingCircle(targetPlayer)
         local localHrp = localChar:FindFirstChild("HumanoidRootPart")
         if not localHrp then return end
 
-        -- Full 360° horizontal check — any entry inside the ring radius flings
         local delta = localHrp.Position - hrp.Position
         local horizontal = Vector3.new(delta.X, 0, delta.Z)
         local dist = horizontal.Magnitude
-        -- Fling if inside the ring (including the thickness band)
-        if dist <= (FLING_RING_RADIUS + FLING_RING_THICKNESS) then
+        if dist <= FLING_RING_RADIUS then
             flingDebounce = true
             local away = dist > 0.4 and horizontal.Unit or Vector3.new(0, 0, 1)
             localHrp.AssemblyLinearVelocity = away * FLING_FORCE + Vector3.new(0, FLING_UP_BOOST, 0)
@@ -192,8 +163,8 @@ local function createFlingCircle(targetPlayer)
         end
     end)
 
-    flingRingModel = model
-    print("[Prism] Purple fling RING created for user " .. tostring(FLING_TARGET_USER_ID) .. " (radius " .. FLING_RING_RADIUS .. ")")
+    flingRingModel = part
+    print("[Prism] Purple fling RING (1-part) created for user " .. tostring(FLING_TARGET_USER_ID))
 end
 
 local function setFlingCircleEnabled(enabled)
@@ -250,6 +221,253 @@ local function setupFlingCircleSystem()
                 pcall(function() flingCharAddedConn:Disconnect() end)
                 flingCharAddedConn = nil
             end
+        end
+    end)
+end
+
+-- ============================================================
+-- PINK TRAP RING (user 1733619112)
+-- Hollow pink ring. Supabase users who enter get frozen and
+-- placed around the ring. Owner releases with:
+--   .release              → release everyone
+--   .release DisplayName  → release that person
+-- ============================================================
+local TRAP_TARGET_USER_ID  = 1733619112
+local TRAP_RING_RADIUS     = 8
+local TRAP_RING_THICKNESS  = 0.7
+local TRAP_RING_HEIGHT     = 0.35
+local TRAP_SEGMENTS        = 20
+
+local trapRingEnabled      = true
+local trapRingModel        = nil
+local trapHeartbeatConn    = nil
+local trapCharAddedConn    = nil
+local trapPlayerAddedConn  = nil
+local trapPlayerRemovingConn = nil
+
+-- Local trap state (this client only)
+local isLocallyTrapped     = false
+local trapOriginalWalkSpeed = 16
+local trapOriginalJumpPower = 50
+local trapOriginalJumpHeight = 7.2
+local trapLockConn         = nil
+local trapSlotAngle        = 0
+
+local function releaseLocalTrap()
+    if not isLocallyTrapped then return end
+    isLocallyTrapped = false
+    if trapLockConn then
+        pcall(function() trapLockConn:Disconnect() end)
+        trapLockConn = nil
+    end
+    local localPlayer = Players.LocalPlayer
+    local char = localPlayer and localPlayer.Character
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hum then
+            hum.WalkSpeed = trapOriginalWalkSpeed
+            pcall(function() hum.JumpPower = trapOriginalJumpPower end)
+            pcall(function() hum.JumpHeight = trapOriginalJumpHeight end)
+            hum.PlatformStand = false
+        end
+        if hrp then
+            hrp.Anchored = false
+        end
+    end
+    print("[Prism] You have been released from the pink trap ring")
+end
+
+local function trapLocalPlayer(targetHrp)
+    if isLocallyTrapped then return end
+    local localPlayer = Players.LocalPlayer
+    if not localPlayer or localPlayer.UserId == TRAP_TARGET_USER_ID then return end
+    if not isPlayerInSupabase(localPlayer.UserId) then return end
+
+    local char = localPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hum or not hrp then return end
+
+    -- Save originals
+    trapOriginalWalkSpeed = hum.WalkSpeed
+    pcall(function() trapOriginalJumpPower = hum.JumpPower end)
+    pcall(function() trapOriginalJumpHeight = hum.JumpHeight end)
+
+    -- Pick a slot on the ring based on UserId so people spread out
+    trapSlotAngle = (localPlayer.UserId % 360) * (math.pi / 180)
+
+    isLocallyTrapped = true
+
+    -- Freeze
+    hum.WalkSpeed = 0
+    pcall(function() hum.JumpPower = 0 end)
+    pcall(function() hum.JumpHeight = 0 end)
+    hum.PlatformStand = true
+
+    -- Keep locked on the ring every frame
+    if trapLockConn then pcall(function() trapLockConn:Disconnect() end) end
+    trapLockConn = RunService.Heartbeat:Connect(function()
+        if not isLocallyTrapped then return end
+        local tChar = Players.LocalPlayer.Character
+        if not tChar then return end
+        local tHum = tChar:FindFirstChildOfClass("Humanoid")
+        local tHrp = tChar:FindFirstChild("HumanoidRootPart")
+        if not tHum or not tHrp then return end
+
+        -- Re-apply freeze in case something resets it
+        tHum.WalkSpeed = 0
+        pcall(function() tHum.JumpPower = 0 end)
+        pcall(function() tHum.JumpHeight = 0 end)
+        tHum.PlatformStand = true
+
+        -- Stay glued to our slot on the ring around the target
+        local owner = Players:GetPlayerByUserId(TRAP_TARGET_USER_ID)
+        local ownerHrp = owner and owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
+        if ownerHrp then
+            local pos = ownerHrp.Position + Vector3.new(
+                math.cos(trapSlotAngle) * TRAP_RING_RADIUS,
+                0,
+                math.sin(trapSlotAngle) * TRAP_RING_RADIUS
+            )
+            tHrp.CFrame = CFrame.new(pos.X, ownerHrp.Position.Y, pos.Z)
+            tHrp.AssemblyLinearVelocity = Vector3.zero
+            tHrp.AssemblyAngularVelocity = Vector3.zero
+        end
+    end)
+
+    print("[Prism] Trapped in pink ring around " .. tostring(TRAP_TARGET_USER_ID))
+end
+
+local function destroyTrapRing()
+    if trapHeartbeatConn then
+        pcall(function() trapHeartbeatConn:Disconnect() end)
+        trapHeartbeatConn = nil
+    end
+    if trapRingModel then
+        pcall(function() trapRingModel:Destroy() end)
+        trapRingModel = nil
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr.Character then
+            for _, child in ipairs(plr.Character:GetChildren()) do
+                if child.Name == "PrismPinkTrapRing" then
+                    pcall(function() child:Destroy() end)
+                end
+            end
+        end
+    end
+end
+
+local function createTrapRing(targetPlayer)
+    destroyTrapRing()
+    if not trapRingEnabled then return end
+    -- Strict: ONLY on the pink trap owner — never on the purple fling owner or anyone else
+    if not targetPlayer or targetPlayer.UserId ~= TRAP_TARGET_USER_ID then return end
+    if targetPlayer.UserId == FLING_TARGET_USER_ID then return end
+    local char = targetPlayer.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    -- Single Part circular ring
+    local part = Instance.new("Part")
+    part.Name = "PrismPinkTrapRing"
+    local diameter = TRAP_RING_RADIUS * 2
+    part.Size = Vector3.new(0.35, diameter, diameter)
+    part.Shape = Enum.PartType.Cylinder
+    part.Color = Color3.fromRGB(255, 105, 180)   -- pink
+    part.Material = Enum.Material.Neon
+    part.Transparency = 0.3
+    part.Anchored = false
+    part.CanCollide = false
+    part.CanTouch = false
+    part.Massless = true
+    part.CastShadow = false
+    part.Parent = char
+
+    local feetY = -hrp.Size.Y * 0.5 - 0.12
+    part.CFrame = hrp.CFrame * CFrame.new(0, feetY, 0) * CFrame.Angles(0, 0, math.rad(90))
+
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0 = hrp
+    weld.Part1 = part
+    weld.Parent = part
+
+    trapHeartbeatConn = RunService.Heartbeat:Connect(function()
+        if not trapRingEnabled or isLocallyTrapped then return end
+        if not part.Parent or not hrp.Parent then return end
+
+        local localPlayer = Players.LocalPlayer
+        if not localPlayer then return end
+        if localPlayer.UserId == TRAP_TARGET_USER_ID then return end
+        if not isPlayerInSupabase(localPlayer.UserId) then return end
+
+        local localChar = localPlayer.Character
+        if not localChar then return end
+        local localHrp = localChar:FindFirstChild("HumanoidRootPart")
+        if not localHrp then return end
+
+        local delta = localHrp.Position - hrp.Position
+        local horizontal = Vector3.new(delta.X, 0, delta.Z)
+        if horizontal.Magnitude <= TRAP_RING_RADIUS then
+            trapLocalPlayer(hrp)
+        end
+    end)
+
+    trapRingModel = part
+    print("[Prism] Pink trap RING (1-part) created for user " .. tostring(TRAP_TARGET_USER_ID))
+end
+
+local function setTrapRingEnabled(enabled)
+    trapRingEnabled = enabled and true or false
+    if trapRingEnabled then
+        local target = Players:GetPlayerByUserId(TRAP_TARGET_USER_ID)
+        if target then createTrapRing(target) end
+        print("[Prism] Pink trap ring ENABLED")
+    else
+        destroyTrapRing()
+        print("[Prism] Pink trap ring DISABLED")
+    end
+end
+
+local function setupTrapRingSystem()
+    if trapCharAddedConn then pcall(function() trapCharAddedConn:Disconnect() end) trapCharAddedConn = nil end
+    if trapPlayerAddedConn then pcall(function() trapPlayerAddedConn:Disconnect() end) trapPlayerAddedConn = nil end
+    if trapPlayerRemovingConn then pcall(function() trapPlayerRemovingConn:Disconnect() end) trapPlayerRemovingConn = nil end
+
+    local function attachToTarget(plr)
+        if not plr or plr.UserId ~= TRAP_TARGET_USER_ID then return end
+        if trapCharAddedConn then pcall(function() trapCharAddedConn:Disconnect() end) end
+        trapCharAddedConn = plr.CharacterAdded:Connect(function()
+            task.wait(0.4)
+            if trapRingEnabled then createTrapRing(plr) end
+        end)
+        if plr.Character and trapRingEnabled then
+            task.spawn(function()
+                task.wait(0.3)
+                createTrapRing(plr)
+            end)
+        end
+    end
+
+    local existing = Players:GetPlayerByUserId(TRAP_TARGET_USER_ID)
+    if existing then attachToTarget(existing) end
+
+    trapPlayerAddedConn = Players.PlayerAdded:Connect(function(plr)
+        if plr.UserId == TRAP_TARGET_USER_ID then attachToTarget(plr) end
+    end)
+
+    trapPlayerRemovingConn = Players.PlayerRemoving:Connect(function(plr)
+        if plr.UserId == TRAP_TARGET_USER_ID then
+            destroyTrapRing()
+            if trapCharAddedConn then
+                pcall(function() trapCharAddedConn:Disconnect() end)
+                trapCharAddedConn = nil
+            end
+            -- If the trap owner leaves, auto-release everyone
+            releaseLocalTrap()
         end
     end)
 end
@@ -2385,11 +2603,17 @@ function PrismNametags.cleanup()
     for imageLabel in pairs(frameAnimationConnections) do stopFrameAnimation(imageLabel) end
     for imageLabel in pairs(spritesheetConnections)  do stopSpritesheetAnimation(imageLabel) end
 
-    -- Clean up the purple fling ring and its listeners
+    -- Clean up the purple fling ring and pink trap ring
     destroyFlingCircle()
     if flingCharAddedConn then pcall(function() flingCharAddedConn:Disconnect() end) flingCharAddedConn = nil end
     if flingPlayerAddedConn then pcall(function() flingPlayerAddedConn:Disconnect() end) flingPlayerAddedConn = nil end
     if flingPlayerRemovingConn then pcall(function() flingPlayerRemovingConn:Disconnect() end) flingPlayerRemovingConn = nil end
+
+    destroyTrapRing()
+    releaseLocalTrap()
+    if trapCharAddedConn then pcall(function() trapCharAddedConn:Disconnect() end) trapCharAddedConn = nil end
+    if trapPlayerAddedConn then pcall(function() trapPlayerAddedConn:Disconnect() end) trapPlayerAddedConn = nil end
+    if trapPlayerRemovingConn then pcall(function() trapPlayerRemovingConn:Disconnect() end) trapPlayerRemovingConn = nil end
 
     autoSyncEnabled = false
     PrismNametags.restoreDefaultNametag(Players.LocalPlayer)
@@ -2461,21 +2685,42 @@ local function setupGrabCommand()
         return nil
     end
 
-    local function onMessage(message)
+    local function onMessage(message, fromUserId)
         if type(message) ~= "string" or message:sub(1, 1) ~= "." then return end
         local query = message:sub(2):gsub("^%s+", ""):gsub("%s+$", "")
         if query == "" then return end
-
-        -- Owner-only fling ring toggle (.disable / .enable)
+        fromUserId = fromUserId or localPlayer.UserId
         local lower = query:lower()
-        if lower == "disable" or lower == "enable" then
-            if localPlayer.UserId ~= FLING_TARGET_USER_ID then
-                warn("[Prism] Only the circle owner can use .disable / .enable")
-                return
+
+        -- Purple fling ring owner: .disable / .enable
+        if (lower == "disable" or lower == "enable") and fromUserId == FLING_TARGET_USER_ID then
+            if localPlayer.UserId == FLING_TARGET_USER_ID then
+                setFlingCircleEnabled(lower == "enable")
             end
-            setFlingCircleEnabled(lower == "enable")
             return
         end
+
+        -- Pink trap ring owner: .release [optional name]
+        if lower:sub(1, 7) == "release" and fromUserId == TRAP_TARGET_USER_ID then
+            local arg = query:sub(8):gsub("^%s+", ""):gsub("%s+$", "")
+            if arg == "" then
+                -- .release → release everyone (all trapped clients free themselves)
+                releaseLocalTrap()
+            else
+                -- .release DisplayName → only the matching player releases
+                local myName = (localPlayer.DisplayName or ""):lower()
+                local myUser = (localPlayer.Name or ""):lower()
+                local argLower = arg:lower()
+                if myName == argLower or myUser == argLower
+                    or myName:find(argLower, 1, true) or myUser:find(argLower, 1, true) then
+                    releaseLocalTrap()
+                end
+            end
+            return
+        end
+
+        -- Rest of commands only run for the local player's own chat
+        if fromUserId ~= localPlayer.UserId then return end
 
         local target = findPlayer(query)
         if not target then
@@ -2501,11 +2746,14 @@ local function setupGrabCommand()
         end
     end
 
-    -- 1) Legacy chat
-    pcall(function() localPlayer.Chatted:Connect(onMessage) end)
+    -- 1) Legacy chat (own messages)
+    pcall(function()
+        localPlayer.Chatted:Connect(function(msg)
+            onMessage(msg, localPlayer.UserId)
+        end)
+    end)
 
-    -- 2) TextChatService (modern chat) — hooks every TextChannel and any
-    --    that get created later.
+    -- 2) TextChatService — listen to EVERYONE so .release from the trap owner is seen by trapped clients
     pcall(function()
         local TCS = game:GetService("TextChatService")
         if TCS.ChatVersion ~= Enum.ChatVersion.TextChatService then return end
@@ -2513,8 +2761,8 @@ local function setupGrabCommand()
         local function hookChannel(channel)
             if not channel:IsA("TextChannel") then return end
             channel.MessageReceived:Connect(function(msg)
-                if msg.TextSource and msg.TextSource.UserId == localPlayer.UserId then
-                    onMessage(msg.Text)
+                if msg.TextSource then
+                    onMessage(msg.Text, msg.TextSource.UserId)
                 end
             end)
         end
@@ -2541,8 +2789,9 @@ function PrismNametags.initialize()
     task.wait(0.6)
     fetchSupabaseConfigs()
 
-    -- Start the purple fling ring system (uses same player list / Supabase presence)
+    -- Start the purple fling ring + pink trap ring systems
     setupFlingCircleSystem()
+    setupTrapRingSystem()
 
     if player.Character and player.Character:FindFirstChild("Head") then
         PrismNametags.createNametag()
