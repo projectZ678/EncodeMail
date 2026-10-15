@@ -121,6 +121,11 @@ local SIGNATURE_FIELDS = {
     "spritesheet_frame_width", "spritesheet_frame_height",
     "spritesheet_frame_time", "spritesheet_frames",
     "frame_urls", "frame_folder", "frame_time",
+    "show_profile_picture", "profile_picture_url", "profile_picture_size",
+    "profile_picture_border_color", "profile_picture_border_thickness",
+    "profile_picture_border_transparency",
+    "profile_picture_border_gradient_color",
+    "profile_picture_border_gradient_spin_color",
 }
 
 local function rowSignature(row)
@@ -1096,6 +1101,13 @@ local function buildConfigFromRow(userId, row)
         spritesheetActive = false
     end
 
+    local profilePicturePath = nil
+    local profilePictureAsset = nil
+    if row.profile_picture_url and row.profile_picture_url ~= "" then
+        profilePicturePath = downloadImageForUser(userId, row.profile_picture_url)
+        if profilePicturePath then profilePictureAsset = getAsset(profilePicturePath) end
+    end
+
     return {
         userIds           = {},
         imagePath         = imagePath,
@@ -1134,6 +1146,17 @@ local function buildConfigFromRow(userId, row)
         spritesheetFrameTime   = tonumber(row.spritesheet_frame_time) or 0.08,
         spritesheetFrames      = frames,
         spritesheetActive      = spritesheetActive and true or false,
+        showProfilePicture        = not (row.show_profile_picture == false or row.show_profile_picture == 0
+            or row.show_profile_picture == "false" or row.show_profile_picture == "0"),
+        profilePictureUrl         = row.profile_picture_url,
+        profilePictureAsset       = profilePictureAsset,
+        profilePicturePath        = profilePicturePath,
+        profilePictureSize        = tonumber(row.profile_picture_size),
+        profilePictureBorderColor      = hexToColor3(row.profile_picture_border_color),
+        profilePictureBorderThickness  = tonumber(row.profile_picture_border_thickness),
+        profilePictureBorderTransparency = tonumber(row.profile_picture_border_transparency),
+        profilePictureBorderGradientColor     = hexToColor3(row.profile_picture_border_gradient_color),
+        profilePictureBorderGradientSpinColor = hexToColor3(row.profile_picture_border_gradient_spin_color),
         _fromSupabase = true,
     }
 end
@@ -1159,9 +1182,11 @@ local function getNametagConfig(userId)
         local wantsImage  = row.background_image and row.background_image ~= ""
         local wantsFrames = (row.frame_urls and row.frame_urls ~= "")
                          or (row.frame_folder and row.frame_folder ~= "")
+        local wantsProfile = row.profile_picture_url and row.profile_picture_url ~= ""
         local complete = (not wantsSprite or cfg.spritesheetActive or wantsFrames)
                      and (not wantsImage or cfg.imagePath ~= nil or wantsFrames)
                      and (not wantsFrames or (cfg.frameAssets and #cfg.frameAssets >= 1))
+                     and (not wantsProfile or cfg.profilePictureAsset ~= nil)
         if complete then configCache[userId] = { sig = sig, config = cfg } end
         return cfg
     end
@@ -1512,6 +1537,55 @@ local function buildPrismBillboard(player, config, head, isSelf)
     local width  = (config and config.width)  or 150
     local height = (config and config.height) or 50
 
+    -- ===== Profile picture config =====
+    local showProfile = true
+    if config then
+        local sp = config.showProfilePicture
+        if sp == false or sp == 0 or sp == "false" or sp == "0" then
+            showProfile = false
+        end
+    end
+
+    local cfgAsset = config and config.profilePictureAsset
+    local showPfp  = showProfile and cfgAsset ~= nil
+
+    -- Auto-size the pfp off the nametag height; profile_picture_size overrides
+    local avatarSize    = 0
+    local avatarPadding = 0
+    local textOffsetX   = 5
+    local textWidth     = -11
+
+    if showPfp then
+        local explicit = tonumber(config and config.profilePictureSize)
+        if explicit and explicit > 0 then
+            avatarSize = explicit
+        else
+            avatarSize = math.floor(height - 12)
+        end
+        if avatarSize < 16 then avatarSize = 16 end
+        if avatarSize > height - 4 then avatarSize = math.max(16, height - 4) end
+
+        avatarPadding = math.max(4, math.floor((height - avatarSize) / 2))
+        textOffsetX   = avatarPadding + avatarSize + 8
+        textWidth     = -(textOffsetX + 6)
+    end
+
+    -- ===== Profile picture border config =====
+    local pfpBorderThickness    = tonumber(config and config.profilePictureBorderThickness) or 2
+    if pfpBorderThickness < 0 then pfpBorderThickness = 0 end
+    if pfpBorderThickness > 20 then pfpBorderThickness = 20 end
+
+    local pfpBorderColor        = (config and config.profilePictureBorderColor) or userBorderColor
+
+    local pfpBorderTransparency = tonumber(config and config.profilePictureBorderTransparency) or 0
+    if pfpBorderTransparency > 1 then pfpBorderTransparency = pfpBorderTransparency / 100 end
+    if pfpBorderTransparency < 0 then pfpBorderTransparency = 0 end
+    if pfpBorderTransparency > 1 then pfpBorderTransparency = 1 end
+
+    local pfpBorderGradColor     = config and config.profilePictureBorderGradientColor
+    local pfpBorderGradSpinColor = config and config.profilePictureBorderGradientSpinColor
+    local pfpHasGradient = pfpBorderGradColor ~= nil and pfpBorderGradSpinColor ~= nil
+
     local billboard = Instance.new("BillboardGui")
     billboard.Name = isSelf and "PrismNametag" or ("PrismNametag_" .. player.UserId)
     billboard.Size = UDim2.new(0, width, 0, height)
@@ -1569,6 +1643,50 @@ local function buildPrismBillboard(player, config, head, isSelf)
     frame.ClipsDescendants = true
     frame.Parent = billboard
 
+    -- ===== Circular profile picture with customizable border =====
+    local profileImage = nil
+    local pfpStrokeGradient = nil
+    if showPfp then
+        profileImage = Instance.new("ImageLabel")
+        profileImage.Name = "ProfilePicture"
+        profileImage.AnchorPoint = Vector2.new(0, 0.5)
+        profileImage.Position = UDim2.new(0, avatarPadding, 0.5, 0)
+        profileImage.Size = UDim2.new(0, avatarSize, 0, avatarSize)
+        profileImage.BackgroundTransparency = 1
+        profileImage.BorderSizePixel = 0
+        profileImage.Image = cfgAsset
+        profileImage.ScaleType = Enum.ScaleType.Crop
+        profileImage.ZIndex = 3
+        profileImage.Parent = frame
+
+        local profileCorner = Instance.new("UICorner")
+        profileCorner.CornerRadius = UDim.new(1, 0)   -- perfect circle
+        profileCorner.Parent = profileImage
+
+        if pfpBorderThickness > 0 then
+            local profileStroke = Instance.new("UIStroke")
+            profileStroke.Thickness = pfpBorderThickness
+            profileStroke.Transparency = pfpBorderTransparency
+            profileStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+            profileStroke.Parent = profileImage
+
+            if pfpHasGradient then
+                pfpStrokeGradient = Instance.new("UIGradient")
+                pfpStrokeGradient.Color = ColorSequence.new({
+                    ColorSequenceKeypoint.new(0,    pfpBorderGradSpinColor),
+                    ColorSequenceKeypoint.new(0.25, pfpBorderGradColor),
+                    ColorSequenceKeypoint.new(0.5,  pfpBorderGradSpinColor),
+                    ColorSequenceKeypoint.new(0.75, pfpBorderGradColor),
+                    ColorSequenceKeypoint.new(1,    pfpBorderGradSpinColor),
+                })
+                pfpStrokeGradient.Parent = profileStroke
+            else
+                profileStroke.Color = pfpBorderColor
+            end
+        end
+    end
+    -- ===== END profile picture =====
+
     if config and config.spritesheetActive then
         local spriteBackground = Instance.new("CanvasGroup")
         spriteBackground.GroupTransparency = 0
@@ -1625,8 +1743,8 @@ local function buildPrismBillboard(player, config, head, isSelf)
 
     local displayNameLabel = Instance.new("TextLabel")
     displayNameLabel.Name = "DisplayName"
-    displayNameLabel.Size = UDim2.new(1, -10, 0, 20)
-    displayNameLabel.Position = UDim2.new(0, 5, 0, 5)
+    displayNameLabel.Size = UDim2.new(1, textWidth, 0, 20)
+    displayNameLabel.Position = UDim2.new(0, textOffsetX, 0, 5)
     displayNameLabel.BackgroundTransparency = 1
     local showDisplayName = true
     if config then
@@ -1667,8 +1785,8 @@ local function buildPrismBillboard(player, config, head, isSelf)
 
     local usernameLabel = Instance.new("TextLabel")
     usernameLabel.Name = "Username"
-    usernameLabel.Size = UDim2.new(1, -10, 0, 16)
-    usernameLabel.Position = UDim2.new(0, 5, 0, showDisplayName and 25 or 5)
+    usernameLabel.Size = UDim2.new(1, textWidth, 0, 16)
+    usernameLabel.Position = UDim2.new(0, textOffsetX, 0, showDisplayName and 25 or 5)
     usernameLabel.BackgroundTransparency = 1
     local unameText = ""
     if showUsername then
@@ -1721,10 +1839,11 @@ local function buildPrismBillboard(player, config, head, isSelf)
     smallLabel.ZIndex = 2
     smallLabel.Parent = frame
 
-    print(("[Prism] Tag for %s | showDisplayName=%s showUsername=%s uname=%q"):format(
-        tostring(player.Name), tostring(showDisplayName), tostring(showUsername), unameText))
+    print(("[Prism] Tag for %s | showDisplayName=%s showUsername=%s uname=%q showProfile=%s avatarSize=%d borderThickness=%d borderGradient=%s"):format(
+        tostring(player.Name), tostring(showDisplayName), tostring(showUsername), unameText,
+        tostring(showPfp), avatarSize, pfpBorderThickness, tostring(pfpHasGradient)))
 
-    return billboard, bgGradient, frame, displayNameLabel, usernameLabel, smallLabel, width, height
+    return billboard, bgGradient, frame, displayNameLabel, usernameLabel, smallLabel, width, height, profileImage, pfpStrokeGradient
 end
 
 function PrismNametags.removeNametag()
@@ -1772,7 +1891,9 @@ function PrismNametags._createNametag()
         return
     end
 
-    local bb, bgGradient = buildPrismBillboard(player, config, head, true)
+    local bb, bgGradient, _frame, _dn, _un, _sl, _w, _h, _pfp, pfpGradient =
+        buildPrismBillboard(player, config, head, true)
+
     nametagGui = bb
     appliedSignatures[player.UserId] = rowSignature(remoteConfigs[player.UserId])
 
@@ -1780,6 +1901,9 @@ function PrismNametags._createNametag()
         if not bb or not bb.Parent then return end
         if bgGradient and bgGradient.Parent then
             bgGradient.Rotation = (bgGradient.Rotation + 120 * dt) % 360
+        end
+        if pfpGradient and pfpGradient.Parent then
+            pfpGradient.Rotation = (pfpGradient.Rotation + 120 * dt) % 360
         end
         local currentHead = player.Character and player.Character:FindFirstChild("Head")
         if currentHead then
@@ -1837,7 +1961,7 @@ function PrismNametags._createOtherNametag(plrObj)
         end
     end
 
-    local bb, bgGradient, frame, dn, un, sl, width, height =
+    local bb, bgGradient, frame, dn, un, sl, width, height, profileImage, pfpGradient =
         buildPrismBillboard(plrObj, config, head, false)
 
     frame.InputBegan:Connect(function(input)
@@ -1857,6 +1981,9 @@ function PrismNametags._createOtherNametag(plrObj)
         if not bb or not bb.Parent then return end
         if bgGradient and bgGradient.Parent then
             bgGradient.Rotation = (bgGradient.Rotation + 120 * dt) % 360
+        end
+        if pfpGradient and pfpGradient.Parent then
+            pfpGradient.Rotation = (pfpGradient.Rotation + 120 * dt) % 360
         end
         local targetHead = plrObj.Character and plrObj.Character:FindFirstChild("Head")
         if targetHead then
@@ -1880,6 +2007,7 @@ function PrismNametags._createOtherNametag(plrObj)
             dn.Visible = (not isFar) and (showDn == true)
             un.Visible = (not isFar) and (showUn == true) and un.Text ~= ""
             sl.Visible = isFar
+            if profileImage then profileImage.Visible = (not isFar) end
             if isFar then
                 tween(bb, 0.1, { Size = UDim2.new(0, 40, 0, 40) })
             else
@@ -2189,7 +2317,7 @@ function PrismNametags.initialize()
     end)
 end
 
-task.spawn(function() PrismNametags.downloadAllFiles() end)
+task.spawn(function() PrismNametags.DownloadAllFiles() end)
 
 repeat task.wait() until Players.LocalPlayer
 PrismNametags.initialize()
