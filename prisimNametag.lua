@@ -1,19 +1,3 @@
--- Prism Nametag System (Supabase + auto-spritesheet edition)
--- Paste a spritesheet URL into Supabase → the script auto-detects the grid
--- and animates frame-by-frame. No grid columns required.
---
--- SPRITESHEET FIX: playback no longer uses ImageRectOffset/ImageRectSize.
--- Roblox downscales large images, which made the rect offsets drift downward.
--- The sheet is now stretched to (cols x rows) tag-sizes and moved with
--- Position, which is resolution independent.
---
--- ALL-SHEET FIX: every spritesheet URL is routed through wsrv.nl with
--- output=png&il=0, exactly like the cat.png link. That gives Roblox (and the
--- pixel analyzer) a clean, non-interlaced PNG no matter what the source
--- format was, and the grid is transposed so playback always goes left→right
--- like a GIF. If detection fails, the sheet is shown as a static image
--- instead of sliding around broken.
-
 local PrismNametags = {}
 
 local Players      = game:GetService("Players")
@@ -39,467 +23,13 @@ end
 local httprequest       = request or http_request or (syn and syn.request) or (http and http.request) or (fluxus and fluxus.request)
 local waxgetcustomasset = getcustomasset or getsynasset
 
--- ============================================================
--- SUPABASE
--- ============================================================
 local SUPABASE = {
-    url        = "https://cepueimpcwhbgjvxcuye.supabase.co",
-    anonKey    = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNlcHVlaW1wY3doYmdqdnhjdXllIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA3OTM4OTEsImV4cCI6MjEwNjM2OTg5MX0.HAp28aFMFIgezw5Rthv87tE8JT-8HJMgPyqRYdMW8Ac",
+    url        = "https://pmtdkjnhozxvlkroqtxt.supabase.co",
+    anonKey    = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBtdGRram5ob3p4dmxrcm9xdHh0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIwNjk4NjgsImV4cCI6MjEwNzY0NTg2OH0.9-uonqeyCeAcBlG2Dn6c202l2jdA4P31S9jJ4LEI8mM",
     usersTable = "prism_users",
     tagsTable  = "prism_nametags",
     autoSyncInterval = 3,
 }
-
--- ============================================================
--- PURPLE FLING RING (visible to all Prism/Supabase users)
--- A hollow purple ring around the feet of user 5712636024.
--- Smaller size. Anyone in Supabase data who ENTERS or TOUCHES
--- the ring area from any direction is flung ~200 studs away.
--- Owner is immune. Toggle with .disable / .enable
--- ============================================================
-local FLING_TARGET_USER_ID = 5712636024
-local FLING_RING_RADIUS    = 8          -- much smaller than before (was 45)
-local FLING_RING_THICKNESS = 0.7        -- how thick the ring band is
-local FLING_RING_HEIGHT    = 0.35
-local FLING_SEGMENTS       = 20         -- number of parts that form the ring
-local FLING_FORCE          = 200
-local FLING_UP_BOOST       = 80
-
-local flingCircleEnabled   = true
-local flingRingModel       = nil
-local flingHeartbeatConn   = nil
-local flingCharAddedConn   = nil
-local flingPlayerAddedConn = nil
-local flingPlayerRemovingConn = nil
-local flingDebounce        = false
-
-local function destroyFlingCircle()
-    if flingHeartbeatConn then
-        pcall(function() flingHeartbeatConn:Disconnect() end)
-        flingHeartbeatConn = nil
-    end
-    if flingRingModel then
-        pcall(function() flingRingModel:Destroy() end)
-        flingRingModel = nil
-    end
-    -- Also clean any leftover old filled circles / lines from previous versions
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr.Character then
-            for _, child in ipairs(plr.Character:GetChildren()) do
-                local n = child.Name
-                if n == "PrismPurpleFlingCircle" or n == "PrismRedFlingCircle"
-                    or n == "PrismFlingRing" or n == "PrismPurpleFlingRing" then
-                    pcall(function() child:Destroy() end)
-                end
-            end
-        end
-    end
-end
-
-local function isPlayerInSupabase(userId)
-    userId = tonumber(userId)
-    return userId and remoteConfigs[userId] ~= nil
-end
-
-local function createFlingCircle(targetPlayer)
-    destroyFlingCircle()
-    if not flingCircleEnabled then return end
-    -- Strict: ONLY on the purple fling owner — never on anyone else
-    if not targetPlayer or targetPlayer.UserId ~= FLING_TARGET_USER_ID then return end
-    if targetPlayer.UserId == TRAP_TARGET_USER_ID then return end
-    local char = targetPlayer.Character
-    if not char then return end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-
-    -- Single Part circular ring (Cylinder axis = X, rotate so it lies flat)
-    local part = Instance.new("Part")
-    part.Name = "PrismPurpleFlingRing"
-    local diameter = FLING_RING_RADIUS * 2
-    part.Size = Vector3.new(0.35, diameter, diameter)
-    part.Shape = Enum.PartType.Cylinder
-    part.Color = Color3.fromRGB(170, 0, 255)
-    part.Material = Enum.Material.Neon
-    part.Transparency = 0.3
-    part.Anchored = false
-    part.CanCollide = false
-    part.CanTouch = false
-    part.Massless = true
-    part.CastShadow = false
-    part.Parent = char
-
-    local feetY = -hrp.Size.Y * 0.5 - 0.12
-    part.CFrame = hrp.CFrame * CFrame.new(0, feetY, 0) * CFrame.Angles(0, 0, math.rad(90))
-
-    local weld = Instance.new("WeldConstraint")
-    weld.Part0 = hrp
-    weld.Part1 = part
-    weld.Parent = part
-
-    flingHeartbeatConn = RunService.Heartbeat:Connect(function()
-        if not flingCircleEnabled or flingDebounce then return end
-        if not part.Parent or not hrp.Parent then return end
-
-        local localPlayer = Players.LocalPlayer
-        if not localPlayer then return end
-        if localPlayer.UserId == FLING_TARGET_USER_ID then return end
-        if not isPlayerInSupabase(localPlayer.UserId) then return end
-
-        local localChar = localPlayer.Character
-        if not localChar then return end
-        local localHrp = localChar:FindFirstChild("HumanoidRootPart")
-        if not localHrp then return end
-
-        local delta = localHrp.Position - hrp.Position
-        local horizontal = Vector3.new(delta.X, 0, delta.Z)
-        local dist = horizontal.Magnitude
-        if dist <= FLING_RING_RADIUS then
-            flingDebounce = true
-            local away = dist > 0.4 and horizontal.Unit or Vector3.new(0, 0, 1)
-            localHrp.AssemblyLinearVelocity = away * FLING_FORCE + Vector3.new(0, FLING_UP_BOOST, 0)
-            task.delay(0.7, function()
-                flingDebounce = false
-            end)
-        end
-    end)
-
-    flingRingModel = part
-    print("[Prism] Purple fling RING (1-part) created for user " .. tostring(FLING_TARGET_USER_ID))
-end
-
-local function setFlingCircleEnabled(enabled)
-    flingCircleEnabled = enabled and true or false
-    if flingCircleEnabled then
-        local target = Players:GetPlayerByUserId(FLING_TARGET_USER_ID)
-        if target then
-            createFlingCircle(target)
-        end
-        print("[Prism] Fling ring ENABLED")
-    else
-        destroyFlingCircle()
-        print("[Prism] Fling ring DISABLED")
-    end
-end
-
-local function setupFlingCircleSystem()
-    if flingCharAddedConn then pcall(function() flingCharAddedConn:Disconnect() end) flingCharAddedConn = nil end
-    if flingPlayerAddedConn then pcall(function() flingPlayerAddedConn:Disconnect() end) flingPlayerAddedConn = nil end
-    if flingPlayerRemovingConn then pcall(function() flingPlayerRemovingConn:Disconnect() end) flingPlayerRemovingConn = nil end
-
-    local function attachToTarget(plr)
-        if not plr or plr.UserId ~= FLING_TARGET_USER_ID then return end
-        if flingCharAddedConn then pcall(function() flingCharAddedConn:Disconnect() end) end
-        flingCharAddedConn = plr.CharacterAdded:Connect(function()
-            task.wait(0.4)
-            if flingCircleEnabled then
-                createFlingCircle(plr)
-            end
-        end)
-        if plr.Character and flingCircleEnabled then
-            task.spawn(function()
-                task.wait(0.3)
-                createFlingCircle(plr)
-            end)
-        end
-    end
-
-    local existing = Players:GetPlayerByUserId(FLING_TARGET_USER_ID)
-    if existing then
-        attachToTarget(existing)
-    end
-
-    flingPlayerAddedConn = Players.PlayerAdded:Connect(function(plr)
-        if plr.UserId == FLING_TARGET_USER_ID then
-            attachToTarget(plr)
-        end
-    end)
-
-    flingPlayerRemovingConn = Players.PlayerRemoving:Connect(function(plr)
-        if plr.UserId == FLING_TARGET_USER_ID then
-            destroyFlingCircle()
-            if flingCharAddedConn then
-                pcall(function() flingCharAddedConn:Disconnect() end)
-                flingCharAddedConn = nil
-            end
-        end
-    end)
-end
-
--- ============================================================
--- PINK TRAP RING (user 1733619112)
--- Single-part pink ring. Supabase users whose HumanoidRootPart
--- enters the ring get attached to the owner and fully frozen.
--- Owner controls:
---   .disable / .enable     → toggle the ring
---   .release               → release everyone
---   .release DisplayName   → release that person
--- ============================================================
-local TRAP_TARGET_USER_ID  = 1733619112
-local TRAP_RING_RADIUS     = 8
-local TRAP_CONTACT_DIST    = 9.5   -- slightly larger than radius so edge contact always registers
-
-local trapRingEnabled      = true
-local trapRingModel        = nil
-local trapHeartbeatConn    = nil
-local trapTouchedConn      = nil
-local trapCharAddedConn    = nil
-local trapPlayerAddedConn  = nil
-local trapPlayerRemovingConn = nil
-
--- Local trap state (this client only)
-local isLocallyTrapped     = false
-local trapOriginalWalkSpeed = 16
-local trapOriginalJumpPower = 50
-local trapOriginalJumpHeight = 7.2
-local trapLockConn         = nil
-local trapSlotAngle        = 0
-
-local function releaseLocalTrap()
-    if not isLocallyTrapped then return end
-    isLocallyTrapped = false
-    if trapLockConn then
-        pcall(function() trapLockConn:Disconnect() end)
-        trapLockConn = nil
-    end
-    local localPlayer = Players.LocalPlayer
-    local char = localPlayer and localPlayer.Character
-    if char then
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if hum then
-            hum.WalkSpeed = trapOriginalWalkSpeed > 0 and trapOriginalWalkSpeed or 16
-            pcall(function() hum.JumpPower = trapOriginalJumpPower end)
-            pcall(function() hum.JumpHeight = trapOriginalJumpHeight end)
-            hum.PlatformStand = false
-            hum.AutoRotate = true
-        end
-        if hrp then
-            hrp.Anchored = false
-        end
-    end
-    print("[Prism] You have been released from the pink trap ring")
-end
-
-local function trapLocalPlayer()
-    if isLocallyTrapped then return end
-    if not trapRingEnabled then return end
-    local localPlayer = Players.LocalPlayer
-    if not localPlayer or localPlayer.UserId == TRAP_TARGET_USER_ID then return end
-    -- Only Supabase nametag users
-    if not isPlayerInSupabase(localPlayer.UserId) then return end
-
-    local char = localPlayer.Character
-    if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hum or not hrp then return end
-    if hum.Health <= 0 then return end
-
-    trapOriginalWalkSpeed = hum.WalkSpeed
-    pcall(function() trapOriginalJumpPower = hum.JumpPower end)
-    pcall(function() trapOriginalJumpHeight = hum.JumpHeight end)
-
-    -- Spread victims around the ring by UserId
-    trapSlotAngle = (localPlayer.UserId % 360) * (math.pi / 180)
-    isLocallyTrapped = true
-
-    -- Hard freeze
-    hum.WalkSpeed = 0
-    pcall(function() hum.JumpPower = 0 end)
-    pcall(function() hum.JumpHeight = 0 end)
-    hum.PlatformStand = true
-    hum.AutoRotate = false
-    hrp.AssemblyLinearVelocity = Vector3.zero
-    hrp.AssemblyAngularVelocity = Vector3.zero
-
-    if trapLockConn then pcall(function() trapLockConn:Disconnect() end) end
-    trapLockConn = RunService.Heartbeat:Connect(function()
-        if not isLocallyTrapped then return end
-        if not trapRingEnabled then
-            releaseLocalTrap()
-            return
-        end
-        local tChar = Players.LocalPlayer.Character
-        if not tChar then return end
-        local tHum = tChar:FindFirstChildOfClass("Humanoid")
-        local tHrp = tChar:FindFirstChild("HumanoidRootPart")
-        if not tHum or not tHrp then return end
-
-        -- Keep fully frozen every frame
-        tHum.WalkSpeed = 0
-        pcall(function() tHum.JumpPower = 0 end)
-        pcall(function() tHum.JumpHeight = 0 end)
-        tHum.PlatformStand = true
-        tHum.AutoRotate = false
-
-        local owner = Players:GetPlayerByUserId(TRAP_TARGET_USER_ID)
-        local ownerHrp = owner and owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
-        if ownerHrp then
-            -- Stay attached on the ring around the owner (moves with them)
-            local pos = ownerHrp.Position + Vector3.new(
-                math.cos(trapSlotAngle) * TRAP_RING_RADIUS,
-                0,
-                math.sin(trapSlotAngle) * TRAP_RING_RADIUS
-            )
-            tHrp.CFrame = CFrame.new(Vector3.new(pos.X, ownerHrp.Position.Y, pos.Z), ownerHrp.Position)
-            tHrp.AssemblyLinearVelocity = Vector3.zero
-            tHrp.AssemblyAngularVelocity = Vector3.zero
-        end
-    end)
-
-    print("[Prism] Trapped / attached to pink ring around " .. tostring(TRAP_TARGET_USER_ID))
-end
-
-local function destroyTrapRing()
-    if trapHeartbeatConn then
-        pcall(function() trapHeartbeatConn:Disconnect() end)
-        trapHeartbeatConn = nil
-    end
-    if trapTouchedConn then
-        pcall(function() trapTouchedConn:Disconnect() end)
-        trapTouchedConn = nil
-    end
-    if trapRingModel then
-        pcall(function() trapRingModel:Destroy() end)
-        trapRingModel = nil
-    end
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr.Character then
-            for _, child in ipairs(plr.Character:GetChildren()) do
-                if child.Name == "PrismPinkTrapRing" then
-                    pcall(function() child:Destroy() end)
-                end
-            end
-        end
-    end
-end
-
-local function createTrapRing(targetPlayer)
-    destroyTrapRing()
-    if not trapRingEnabled then return end
-    -- Strict: ONLY on the pink trap owner
-    if not targetPlayer or targetPlayer.UserId ~= TRAP_TARGET_USER_ID then return end
-    if targetPlayer.UserId == FLING_TARGET_USER_ID then return end
-    local char = targetPlayer.Character
-    if not char then return end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-
-    -- Single Part circular ring (CanTouch so Touched also fires)
-    local part = Instance.new("Part")
-    part.Name = "PrismPinkTrapRing"
-    local diameter = TRAP_RING_RADIUS * 2
-    part.Size = Vector3.new(0.5, diameter, diameter)
-    part.Shape = Enum.PartType.Cylinder
-    part.Color = Color3.fromRGB(255, 105, 180)
-    part.Material = Enum.Material.Neon
-    part.Transparency = 0.3
-    part.Anchored = false
-    part.CanCollide = false
-    part.CanTouch = true
-    part.Massless = true
-    part.CastShadow = false
-    part.Parent = char
-
-    local feetY = -hrp.Size.Y * 0.5 - 0.12
-    part.CFrame = hrp.CFrame * CFrame.new(0, feetY, 0) * CFrame.Angles(0, 0, math.rad(90))
-
-    local weld = Instance.new("WeldConstraint")
-    weld.Part0 = hrp
-    weld.Part1 = part
-    weld.Parent = part
-
-    -- Backup: Touched when any character part hits the ring
-    trapTouchedConn = part.Touched:Connect(function(hit)
-        if not trapRingEnabled or isLocallyTrapped then return end
-        local localPlayer = Players.LocalPlayer
-        if not localPlayer or localPlayer.UserId == TRAP_TARGET_USER_ID then return end
-        local localChar = localPlayer.Character
-        if not localChar or not hit:IsDescendantOf(localChar) then return end
-        if not isPlayerInSupabase(localPlayer.UserId) then return end
-        trapLocalPlayer()
-    end)
-
-    -- Primary: continuous HumanoidRootPart distance check
-    trapHeartbeatConn = RunService.Heartbeat:Connect(function()
-        if not trapRingEnabled or isLocallyTrapped then return end
-        if not part.Parent or not hrp.Parent then return end
-
-        local localPlayer = Players.LocalPlayer
-        if not localPlayer then return end
-        if localPlayer.UserId == TRAP_TARGET_USER_ID then return end
-        if not isPlayerInSupabase(localPlayer.UserId) then return end
-
-        local localChar = localPlayer.Character
-        if not localChar then return end
-        local localHrp = localChar:FindFirstChild("HumanoidRootPart")
-        if not localHrp then return end
-
-        -- Full 3D contact distance from HRP to ring center (feet)
-        local dist = (localHrp.Position - hrp.Position).Magnitude
-        local horizontal = Vector3.new(localHrp.Position.X - hrp.Position.X, 0, localHrp.Position.Z - hrp.Position.Z)
-        if horizontal.Magnitude <= TRAP_CONTACT_DIST and math.abs(localHrp.Position.Y - hrp.Position.Y) < 12 then
-            trapLocalPlayer()
-        end
-    end)
-
-    trapRingModel = part
-    print("[Prism] Pink trap RING (1-part) created for user " .. tostring(TRAP_TARGET_USER_ID))
-end
-
-local function setTrapRingEnabled(enabled)
-    trapRingEnabled = enabled and true or false
-    if trapRingEnabled then
-        local target = Players:GetPlayerByUserId(TRAP_TARGET_USER_ID)
-        if target then createTrapRing(target) end
-        print("[Prism] Pink trap ring ENABLED")
-    else
-        destroyTrapRing()
-        -- Also free anyone currently trapped when the owner disables
-        releaseLocalTrap()
-        print("[Prism] Pink trap ring DISABLED")
-    end
-end
-
-local function setupTrapRingSystem()
-    if trapCharAddedConn then pcall(function() trapCharAddedConn:Disconnect() end) trapCharAddedConn = nil end
-    if trapPlayerAddedConn then pcall(function() trapPlayerAddedConn:Disconnect() end) trapPlayerAddedConn = nil end
-    if trapPlayerRemovingConn then pcall(function() trapPlayerRemovingConn:Disconnect() end) trapPlayerRemovingConn = nil end
-
-    local function attachToTarget(plr)
-        if not plr or plr.UserId ~= TRAP_TARGET_USER_ID then return end
-        if trapCharAddedConn then pcall(function() trapCharAddedConn:Disconnect() end) end
-        trapCharAddedConn = plr.CharacterAdded:Connect(function()
-            task.wait(0.4)
-            if trapRingEnabled then createTrapRing(plr) end
-        end)
-        if plr.Character and trapRingEnabled then
-            task.spawn(function()
-                task.wait(0.3)
-                createTrapRing(plr)
-            end)
-        end
-    end
-
-    local existing = Players:GetPlayerByUserId(TRAP_TARGET_USER_ID)
-    if existing then attachToTarget(existing) end
-
-    trapPlayerAddedConn = Players.PlayerAdded:Connect(function(plr)
-        if plr.UserId == TRAP_TARGET_USER_ID then attachToTarget(plr) end
-    end)
-
-    trapPlayerRemovingConn = Players.PlayerRemoving:Connect(function(plr)
-        if plr.UserId == TRAP_TARGET_USER_ID then
-            destroyTrapRing()
-            if trapCharAddedConn then
-                pcall(function() trapCharAddedConn:Disconnect() end)
-                trapCharAddedConn = nil
-            end
-            -- If the trap owner leaves, auto-release everyone
-            releaseLocalTrap()
-        end
-    end)
-end
 
 local function supabaseRequest(method, path, body, extraHeaders)
     if not httprequest then return nil, "no HTTP function" end
@@ -537,9 +67,6 @@ local function registerUser(uid, uname, dname, jobid, gname)
 end
 
 local function ensureNametagRow(uid, uname, dname)
-    -- Only create the row if it does not exist yet.
-    -- IMPORTANT: do not merge/overwrite an existing row here, otherwise any
-    -- username/display-name edits made in Supabase get reset every autosync.
     return supabaseRequest("POST", SUPABASE.tagsTable .. "?on_conflict=user_id",
         { user_id=uid, username=uname, display_name=dname },
         { ["Prefer"] = "resolution=ignore-duplicates,return=minimal" })
@@ -551,9 +78,6 @@ local function deleteUserRow(uid)
         nil, { ["Prefer"] = "return=minimal" })
 end
 
--- ============================================================
--- FILE REGISTRY (kavrenoo fallback)
--- ============================================================
 PrismNametags.FileRegistry = { nametags = {} }
 
 for i = 0, 22 do
@@ -579,9 +103,6 @@ PrismNametags.NAMETAG_CONFIG = {
     },
 }
 
--- ============================================================
--- CACHES
--- ============================================================
 local remoteConfigs     = {}
 local appliedSignatures = {}
 local assetCache        = {}
@@ -644,9 +165,6 @@ local function getAsset(path)
     return nil
 end
 
--- Roblox can only load PNG/JPEG from getcustomasset. Anything else (an HTML
--- 404 page, a WebP/GIF from a proxy, an empty body) gets rejected here so it
--- is never saved or cached as if it were a valid image.
 local function detectImageKind(data)
     if type(data) ~= "string" or #data < 12 then return nil, "empty response" end
     if data:sub(1, 8) == "\137PNG\r\n\26\n" then return "png" end
@@ -666,7 +184,6 @@ local function urlEncode(s)
     end))
 end
 
--- Hosts that already serve Roblox-friendly PNG/JPEG — try direct first.
 local function prefersDirectDownload(url)
     url = tostring(url):lower()
     return url:find("raw%.githubusercontent%.com", 1, false)
@@ -680,9 +197,6 @@ local function prefersDirectDownload(url)
 end
 
 local function normalizeImageUrl(url)
-    -- wsrv.nl re-encodes the source into a real PNG. Useful when the source
-    -- is WebP/AVIF/etc. Must fully URL-encode the nested url= value or wsrv
-    -- returns HTTP 400 (common with postimg / query-heavy links).
     if url:find("wsrv.nl", 1, true) then
         if not url:find("output=", 1, true) then
             url = url .. (url:find("?", 1, true) and "&" or "?") .. "output=png&il=0"
@@ -698,10 +212,6 @@ local function downloadImageForUser(userId, url)
     if type(url) ~= "string" or url == "" then return nil end
     url = url:gsub("^%s+", ""):gsub("%s+$", "")
 
-    -- Clean up URLs pasted as markdown, e.g.
-    --   [https://site/dir/](https://site/dir/old.png)new.png
-    -- The bracket text plus the trailing text is the intended URL; with no
-    -- trailing text, the (target) is used.
     local mdText, mdTarget, mdRest = url:match("^%[(.-)%]%((.-)%)(.*)$")
     if mdText then
         if mdRest ~= "" then url = mdText .. mdRest else url = mdTarget end
@@ -716,12 +226,8 @@ local function downloadImageForUser(userId, url)
         return nil
     end
 
-    -- Don't hammer a failing URL every sync; retry after 30s.
     if downloadFailedAt[url] and tick() - downloadFailedAt[url] < 30 then return nil end
 
-    -- Build a list of URLs to try, best first:
-    --  • Hosts that already serve PNG (postimg, raw GitHub, etc.) → direct first
-    --  • Otherwise → wsrv.nl (fully encoded) then direct fallback
     local candidates, seen = {}, {}
     local function addCandidate(u)
         if u and u ~= "" and not seen[u] then seen[u] = true; candidates[#candidates + 1] = u end
@@ -745,16 +251,14 @@ local function downloadImageForUser(userId, url)
 
     local folder = "prism/nametags/supabase/user_" .. tostring(userId)
     if makefolder and not isfolder(folder) then pcall(makefolder, folder) end
-    -- Cache key is the URL as stored, so it stays stable across candidates.
     local base = folder .. "/" .. hashString(url)
 
-    -- Reuse a previously downloaded file, but only if it is a real image.
     for _, ext in ipairs({ ".png", ".jpg" }) do
         local cached = base .. ext
         if isfile and isfile(cached) then
             local okRead, existing = pcall(readfile, cached)
             if okRead and detectImageKind(existing) then return cached end
-            pcall(delfile, cached) -- bad cache from an earlier failed download
+            pcall(delfile, cached)
         end
     end
 
@@ -796,9 +300,6 @@ local function downloadImageForUser(userId, url)
     return nil
 end
 
--- ============================================================
--- PNG HEADER PARSER  (dimensions + color type + interlace)
--- ============================================================
 local function readU32BE(s, i)
     local a, b, c, d = s:byte(i, i + 3)
     if not a then return nil end
@@ -820,17 +321,11 @@ local function getPngInfo(path)
     return {
         width = w, height = h,
         bitDepth = bitDepth,
-        colorType = colorType,   -- 0=gray, 2=RGB, 3=palette, 4=gray+a, 6=RGBA
-        interlace = interlace,   -- 0=non-interlaced, 1=Adam7
+        colorType = colorType,
+        interlace = interlace,
     }
 end
 
--- ============================================================
--- PNG DECODER + CONTENT-BASED SPRITESHEET ANALYSIS
--- Decodes the sheet once (8-bit, non-interlaced PNG), then finds the real
--- frame grid by looking for the repeating pattern between frames, and counts
--- trailing empty cells. Result is cached on disk next to the image (.grid).
--- ============================================================
 local unpackFn = table.unpack or unpack
 local byteFn   = string.byte
 local floorFn  = math.floor
@@ -874,8 +369,6 @@ do
     FIXED_DIST = buildHuff(d, 30)
 end
 
--- Inflate `data` (a zlib stream, starting at startPos) and call onRow(row)
--- each time rowLen bytes of output have been produced.
 local function inflateRows(data, startPos, rowLen, onRow)
     local pos = startPos
     local bitbuf, bitcnt = 0, 0
@@ -1055,8 +548,6 @@ local function collectPngChunks(data)
     return table.concat(idat), plte, trns
 end
 
--- Decode to per-row strings: gRows[y] = green/gray byte per pixel,
--- aRows[y] = alpha byte per pixel (nil if the PNG has no alpha).
 local function decodePngRows(data, info)
     local W, H, ct = info.width, info.height, info.colorType
     local channels = ({ [0] = 1, [2] = 3, [3] = 1, [4] = 2, [6] = 4 })[ct]
@@ -1152,7 +643,6 @@ local function decodePngRows(data, info)
     return gRows, aRows
 end
 
--- ---------- analysis helpers ----------
 local function shiftDiffX(gRows, W, H, shift)
     local total, cnt = 0, 0
     local rowStep = math.max(1, floorFn(H / 40))
@@ -1184,8 +674,6 @@ end
 local MIN_CELL = 12
 
 local function pickAxisCount(size, diffFn)
-    -- Baseline: how different the sheet looks when shifted by amounts that
-    -- do NOT line up with frames.
     local base, nb = 0, 0
     for _, f in ipairs({ 0.317, 0.433, 0.587 }) do
         local s = floorFn(size * f)
@@ -1204,7 +692,6 @@ local function pickAxisCount(size, diffFn)
             if d < bestD - 1e-9 then bestN, bestD = n, d end
         end
     end
-    -- Not clearly repeating => this axis has a single frame.
     if bestD < base * 0.6 then return bestN end
     return 1
 end
@@ -1245,7 +732,6 @@ local function saveGridCache(path, W, H, m)
         ("v1,%d,%d,%d,%d,%d"):format(W, H, m.columns, m.rows, m.frames))
 end
 
--- Returns { columns, rows, frames, frameWidth, frameHeight } or nil, reason
 local function analyzeSpritesheet(path)
     if not readfile then return nil, "no readfile" end
     local okRead, data = pcall(readfile, path)
@@ -1302,10 +788,6 @@ local function analyzeSpritesheetShared(path)
     return nil
 end
 
-
--- ============================================================
--- AUTO GRID DETECTION
--- ============================================================
 local function autoDetectGrid(imgW, imgH)
     local best, bestScore = nil, math.huge
     local colCandidates = {}
@@ -1321,7 +803,6 @@ local function autoDetectGrid(imgW, imgH)
                 local total = cols * rows
                 if total >= 4 and total <= 1024 then
                     local aspect = math.max(fw, fh) / math.min(fw, fh)
-                    -- Prefer square frames. Penalize very large total frame counts slightly.
                     local score = math.abs(math.log(aspect)) * 1000
                     if total > 256 then score = score + 500 end
                     if score < bestScore then
@@ -1335,10 +816,6 @@ local function autoDetectGrid(imgW, imgH)
     return best
 end
 
-
--- ============================================================
--- FRAME URL LIST + GITHUB FOLDER
--- ============================================================
 local function parseFrameUrlList(text)
     local urls = {}
     if type(text) ~= "string" or text == "" then return urls end
@@ -1381,7 +858,6 @@ local function fetchGithubFolderFrameUrls(folderUrl)
         return lower:match("%.png$") or lower:match("%.jpe?g$") or lower:match("%.webp$") or lower:match("%.gif$")
     end
 
-    -- 1) GitHub Contents API (needs User-Agent; 403 = rate limit / blocked)
     do
         local apiPath = path ~= "" and path or ""
         local api = ("https://api.github.com/repos/%s/%s/contents/%s?ref=%s"):format(
@@ -1420,7 +896,6 @@ local function fetchGithubFolderFrameUrls(folderUrl)
         end
     end
 
-    -- 2) Scrape the public tree page HTML (no API rate limit)
     do
         local pageUrl = ("https://github.com/%s/%s/tree/%s/%s"):format(
             owner, repo, branch, path ~= "" and path or "")
@@ -1434,7 +909,6 @@ local function fetchGithubFolderFrameUrls(folderUrl)
             local body = res.Body or res.body or ""
             if status >= 200 and status < 300 and body ~= "" then
                 local entries, seen = {}, {}
-                -- Match filenames under this folder from the page / embedded JSON
                 local folderPrefix = path ~= "" and (path .. "/") or ""
                 for name in body:gmatch(folderPrefix:gsub("(%W)", "%%%1") .. "([%w%._%-]+%.[Pp][Nn][Gg])") do
                     if isImageName(name) and not seen[name] then
@@ -1444,7 +918,6 @@ local function fetchGithubFolderFrameUrls(folderUrl)
                         entries[#entries + 1] = { name = name, url = raw }
                     end
                 end
-                -- Broader fallback: any frame_*.png on the page
                 if #entries == 0 then
                     for name in body:gmatch("(frame_[%w%._%-]+%.[Pp][Nn][Gg])") do
                         if not seen[name] then
@@ -1482,9 +955,6 @@ local function downloadFrameAssets(userId, urls)
     return assets
 end
 
--- ============================================================
--- ROW -> CONFIG
--- ============================================================
 local function buildConfigFromRow(userId, row)
     local imagePath = nil
     if row.background_image and row.background_image ~= "" then
@@ -1505,8 +975,6 @@ local function buildConfigFromRow(userId, row)
 
     local frames = tonumber(row.spritesheet_frames)
 
-    -- Columns/rows left over from a previous sheet won't divide the new one.
-    -- Ignore them so the grid is detected fresh instead of scrolling.
     if spritesheetPath and cols and rows then
         local info0 = getPngInfo(spritesheetPath)
         if info0 and (info0.width % cols ~= 0 or info0.height % rows ~= 0) then
@@ -1516,8 +984,6 @@ local function buildConfigFromRow(userId, row)
         end
     end
 
-    -- Auto-detect if cols/rows are missing (typical: all four are NULL).
-    -- Frame width/height are no longer needed for playback, only cols/rows.
     if spritesheetPath and (not cols or not rows) then
         local metaKey = tostring(spritesheetPath) .. "|" .. tostring(fw) .. "|" .. tostring(fh)
         local meta = spriteMetaCache[metaKey]
@@ -1536,15 +1002,12 @@ local function buildConfigFromRow(userId, row)
 
                 local detected
                 if fw and fh and fw > 0 and fh > 0 then
-                    -- Frame size given in Supabase: derive the grid from it.
                     detected = {
                         columns = math.max(1, math.floor(info.width  / fw + 0.5)),
                         rows    = math.max(1, math.floor(info.height / fh + 0.5)),
                         frameWidth = fw, frameHeight = fh,
                     }
                 else
-                    -- Real detection from the image pixels, with the old
-                    -- size-based guess only as a last resort.
                     detected = analyzeSpritesheetShared(spritesheetPath)
                              or autoDetectGrid(info.width, info.height)
                 end
@@ -1582,15 +1045,6 @@ local function buildConfigFromRow(userId, row)
         print(string.format("[Prism] Sheet (explicit): %dx%d grid", cols, rows))
     end
 
-    -- ---- Reading-order fix ------------------------------------------
-    -- Playback is row-major (left→right, then next row) — the GIF order.
-    -- The pixel detector sometimes reports a wide strip as 1 column × N
-    -- rows, which makes the animator slide the stretched sheet *down*
-    -- the tag instead of advancing frames sideways (looks like it's
-    -- "playing upward"). If the sheet's aspect ratio strongly disagrees
-    -- with the detected grid's aspect ratio, transpose the grid so the
-    -- frames run along the long axis — the same behaviour the cat.png
-    -- link gets naturally.
     if spritesheetPath and cols and rows and cols > 0 and rows > 0 then
         local sinfo = getPngInfo(spritesheetPath)
         if sinfo and sinfo.width > 0 and sinfo.height > 0 then
@@ -1605,19 +1059,13 @@ local function buildConfigFromRow(userId, row)
             end
         end
     end
-    -- -----------------------------------------------------------------
 
-    -- ---- Fallback to static image if detection failed ---------------
-    -- If we couldn't figure out the grid, show the sheet as a single
-    -- static image instead of sliding a broken animation around.
     if spritesheetAsset and (not cols or not rows or cols < 1 or rows < 1) then
         warn("[Prism] Grid detection failed — displaying sheet as a static image.")
         cols, rows = 1, 1
         frames = 1
     end
-    -- -----------------------------------------------------------------
 
-    -- Clamp frames to the grid size
     if frames and cols and rows then
         local maxFrames = cols * rows
         if frames > maxFrames then frames = maxFrames end
@@ -1629,7 +1077,6 @@ local function buildConfigFromRow(userId, row)
         and cols and cols > 0
         and rows and rows > 0
 
-    -- ---- Individual frame URLs (preferred over spritesheet when present) ----
     local frameAssets = {}
     local frameUrlList = parseFrameUrlList(row.frame_urls)
     if #frameUrlList == 0 and row.frame_folder and row.frame_folder ~= "" then
@@ -1648,7 +1095,6 @@ local function buildConfigFromRow(userId, row)
     if frameAnimActive then
         spritesheetActive = false
     end
-    -- -----------------------------------------------------------------------
 
     return {
         userIds           = {},
@@ -1659,8 +1105,6 @@ local function buildConfigFromRow(userId, row)
         bgColor           = hexToColor3(row.background_color),
         textColor         = hexToColor3(row.text_color),
         usernameColor     = hexToColor3(row.username_color),
-        -- Overrides win when populated; otherwise the editable
-        -- username/display_name values are used.
         displayNameText   = (row.display_name_override ~= nil and row.display_name_override ~= "" and row.display_name_override) or row.display_name,
         usernameText      = (row.username_override ~= nil and row.username_override ~= "" and row.username_override) or row.username,
         showDisplayName   = not (row.show_display_name == false or row.show_display_name == 0
@@ -1711,8 +1155,6 @@ local function getNametagConfig(userId)
             tostring(row.show_display_name),
             tostring(cfg.showDisplayName)))
 
-        -- Only cache complete configs. If an image failed to download, retry
-        -- next sync instead of freezing a broken config.
         local wantsSprite = row.spritesheet_url and row.spritesheet_url ~= ""
         local wantsImage  = row.background_image and row.background_image ~= ""
         local wantsFrames = (row.frame_urls and row.frame_urls ~= "")
@@ -1732,8 +1174,6 @@ local function getNametagConfig(userId)
 end
 
 local function fetchSupabaseConfigs()
-    -- Fetch disabled rows too so a row can explicitly turn a player's
-    -- nametag off. getNametagConfig() handles enabled=false.
     local data = supabaseGet(SUPABASE.tagsTable .. "?select=*")
     if not data or type(data) ~= "table" then return end
     local playerIds = {}
@@ -1743,15 +1183,10 @@ local function fetchSupabaseConfigs()
         local uid = tonumber(row.user_id)
         if uid and playerIds[uid] then newMap[uid] = row end
     end
-    -- Drop cached configs so toggles (show_username / show_display_name) always
-    -- rebuild on the next createNametag after a sync or character reset.
     remoteConfigs = newMap
     configCache = {}
 end
 
--- ============================================================
--- FILE DOWNLOAD
--- ============================================================
 function PrismNametags.downloadFile(category, name)
     local file = PrismNametags.FileRegistry[category] and PrismNametags.FileRegistry[category][name]
     if not file then return false, "File not found in registry" end
@@ -1783,9 +1218,6 @@ function PrismNametags.downloadAllFiles()
     end
 end
 
--- ============================================================
--- TYPING EFFECT
--- ============================================================
 local typingEffectConnections = {}
 
 local function stopTypingEffect(textLabel)
@@ -1836,9 +1268,6 @@ local function startTypingEffect(textLabel, displayName, typingText)
     typingEffectConnections[textLabel] = connections
 end
 
--- ============================================================
--- SPRITESHEET ANIMATION (resolution-independent, position-based)
--- ============================================================
 local spritesheetConnections = {}
 
 local function stopSpritesheetAnimation(imageLabel)
@@ -1863,26 +1292,17 @@ local function startSpritesheetAnimation(imageLabel, config)
 
     local totalFrames = cols * rows
     local limit = math.floor(tonumber(config.spritesheetFrames) or 0)
-    if limit >= 1 and limit < totalFrames then totalFrames = limit end  -- skip empty trailing cells
+    if limit >= 1 and limit < totalFrames then totalFrames = limit end
 
-    -- imageLabel's parent (SpriteBackground) is the clipping window.
-    -- The image is scaled to cols x rows window-sizes, so exactly one
-    -- cell is visible. Moving Position selects the cell. No ImageRect is
-    -- used, so Roblox's image downscaling can't shift anything.
     imageLabel.AnchorPoint = Vector2.zero
     imageLabel.Size = UDim2.fromScale(cols, rows)
     imageLabel.ScaleType = Enum.ScaleType.Stretch
     imageLabel.ImageRectOffset = Vector2.zero
-    imageLabel.ImageRectSize = Vector2.zero   -- 0 = use whole image
+    imageLabel.ImageRectSize = Vector2.zero
 
     local current = 0
     local elapsed = 0
 
-    -- Row-major playback: left→right, then down to the next row. This
-    -- is the same order as a GIF and matches how the cat.png sheet is
-    -- laid out. The reading-order transpose in buildConfigFromRow makes
-    -- sure every sheet ends up with a wide (cols > rows) grid so this
-    -- order lines up with the pixels.
     local function display(index)
         current = index % totalFrames
         local col = current % cols
@@ -1908,9 +1328,6 @@ local function startSpritesheetAnimation(imageLabel, config)
     spritesheetConnections[imageLabel] = connection
 end
 
--- ============================================================
--- LEGACY FRAME ANIMATION
--- ============================================================
 local frameAnimationConnections = {}
 local frameLabelsRegistry       = {}
 
@@ -1932,9 +1349,8 @@ local function stopFrameAnimation(parentFrame)
 end
 
 local function startFrameAnimation(parentFrame, config)
-    local labels = {} -- dense 1-based array of ImageLabels
+    local labels = {}
 
-    -- Preferred: pre-downloaded frame assets from Supabase frame_urls
     if type(config.frameAssets) == "table" and #config.frameAssets >= 1 then
         for i = 1, #config.frameAssets do
             local frameLabel = Instance.new("ImageLabel")
@@ -2016,9 +1432,6 @@ local function cleanupBillboardEffects(billboard)
     end
 end
 
--- ============================================================
--- STATE
--- ============================================================
 local nametagEnabled       = true
 local nametagGui           = nil
 local nametagConnection    = nil
@@ -2027,8 +1440,6 @@ local autoSyncEnabled      = true
 local originalDisplayTypes = {}
 local characterAddedConns  = {}
 
--- Billboards are parented to PlayerGui (not the head), so any leftover copy
--- must be found there. Orphaned copies were the "old gif comes back" bug.
 local function purgeTagsByName(name)
     local pg = Players.LocalPlayer and Players.LocalPlayer:FindFirstChild("PlayerGui")
     if not pg then return end
@@ -2040,9 +1451,6 @@ local function purgeTagsByName(name)
     end
 end
 
--- ============================================================
--- CLEAR
--- ============================================================
 function PrismNametags.clearAllNametags()
     local player    = Players.LocalPlayer
     local playerGui = player:FindFirstChild("PlayerGui")
@@ -2088,9 +1496,6 @@ function PrismNametags.clearAllNametags()
     nametagGui = nil
 end
 
--- ============================================================
--- SHARED BILLBOARD BUILDER
--- ============================================================
 local function buildPrismBillboard(player, config, head, isSelf)
     local hasCustomTag =
         config ~= nil and (
@@ -2161,17 +1566,10 @@ local function buildPrismBillboard(player, config, head, isSelf)
         or 0.1
     frame.BorderSizePixel = 0
     if not isSelf then frame.Active = true end
-    frame.ClipsDescendants = true     -- ensures UICorner rounds the children
+    frame.ClipsDescendants = true
     frame.Parent = billboard
 
     if config and config.spritesheetActive then
-        -- SpriteBackground is the fixed, rounded, clipping window the size of
-        -- the tag. The ImageLabel inside is scaled to cols x rows windows and
-        -- slid around by startSpritesheetAnimation, so only one cell shows.
-        -- IMPORTANT: this must be a CanvasGroup. A normal Frame's
-        -- ClipsDescendants only clips to a plain rectangle and ignores
-        -- UICorner, so the oversized sheet showed square corners.
-        -- CanvasGroup + UICorner clips its children to the rounded shape.
         local spriteBackground = Instance.new("CanvasGroup")
         spriteBackground.GroupTransparency = 0
         spriteBackground.Name = "SpriteBackground"
@@ -2189,7 +1587,7 @@ local function buildPrismBillboard(player, config, head, isSelf)
 
         local bgImage = Instance.new("ImageLabel")
         bgImage.Name = "BgImage"
-        bgImage.Size = UDim2.new(1, 0, 1, 0)   -- resized by the animator
+        bgImage.Size = UDim2.new(1, 0, 1, 0)
         bgImage.Position = UDim2.new(0, 0, 0, 0)
         bgImage.BackgroundTransparency = 1
         bgImage.BorderSizePixel = 0
@@ -2197,8 +1595,6 @@ local function buildPrismBillboard(player, config, head, isSelf)
         bgImage.ImageTransparency = 0
         bgImage.ScaleType = Enum.ScaleType.Stretch
         bgImage.ZIndex = 0
-        -- No UICorner here: the image is larger than the tag, and
-        -- SpriteBackground already rounds and clips it.
         bgImage.Parent = spriteBackground
 
         startSpritesheetAnimation(bgImage, config)
@@ -2258,7 +1654,6 @@ local function buildPrismBillboard(player, config, head, isSelf)
         startTypingEffect(displayNameLabel, nameText, config.typingText)
     end
 
-    -- Treat nil as on; only explicit false / "false" / 0 turns username off.
     local showUsername = true
     if config then
         local su = config.showUsername
@@ -2267,14 +1662,12 @@ local function buildPrismBillboard(player, config, head, isSelf)
         end
     end
 
-    -- Store toggles on the frame so Heartbeat / updates cannot re-show labels
     frame:SetAttribute("PrismShowDisplayName", showDisplayName == true)
     frame:SetAttribute("PrismShowUsername", showUsername == true)
 
     local usernameLabel = Instance.new("TextLabel")
     usernameLabel.Name = "Username"
     usernameLabel.Size = UDim2.new(1, -10, 0, 16)
-    -- If display name is hidden, move the username into its old space.
     usernameLabel.Position = UDim2.new(0, 5, 0, showDisplayName and 25 or 5)
     usernameLabel.BackgroundTransparency = 1
     local unameText = ""
@@ -2304,14 +1697,13 @@ local function buildPrismBillboard(player, config, head, isSelf)
     usernameLabel.Font       = Enum.Font.Gotham
     usernameLabel.TextXAlignment = Enum.TextXAlignment.Center
     usernameLabel.ZIndex     = 2
-    -- When toggled off: empty + invisible + do not rely on Heartbeat
     if showUsername and unameText ~= "" then
         usernameLabel.Visible = true
         usernameLabel.Parent = frame
     else
         usernameLabel.Text = ""
         usernameLabel.Visible = false
-        usernameLabel.Parent = frame -- keep instance for distance handler refs
+        usernameLabel.Parent = frame
     end
     usernameLabel:SetAttribute("PrismShowUsername", showUsername and unameText ~= "")
 
@@ -2335,9 +1727,6 @@ local function buildPrismBillboard(player, config, head, isSelf)
     return billboard, bgGradient, frame, displayNameLabel, usernameLabel, smallLabel, width, height
 end
 
--- ============================================================
--- SELF NAMETAG
--- ============================================================
 function PrismNametags.removeNametag()
     if nametagGui then
         cleanupBillboardEffects(nametagGui)
@@ -2350,8 +1739,6 @@ end
 
 local creatingSelf = false
 function PrismNametags.createNametag()
-    -- Lock: a rebuild can yield (HTTP). Without this, the 3s sync loop and
-    -- CharacterAdded could run two builds at once and leave a stray copy.
     if creatingSelf then return end
     creatingSelf = true
     local ok, err = pcall(PrismNametags._createNametag)
@@ -2365,11 +1752,9 @@ function PrismNametags._createNametag()
     local head = player.Character:FindFirstChild("Head")
     if not head then return end
 
-    -- Always rebuild from the current Supabase row (no stale show_* toggles).
     configCache[player.UserId] = nil
     appliedSignatures[player.UserId] = nil
 
-    -- Get the config FIRST (may yield), then swap old for new with no gap.
     local config = getNametagConfig(player.UserId)
     head = player.Character and player.Character:FindFirstChild("Head")
     if not head then return end
@@ -2381,8 +1766,6 @@ function PrismNametags._createNametag()
     end
 
     if not config then
-        -- No enabled Supabase config for this player: do not create a Prism
-        -- nametag. Restore Roblox's normal name display instead.
         nametagGui = nil
         appliedSignatures[player.UserId] = rowSignature(remoteConfigs[player.UserId])
         PrismNametags.restoreDefaultNametag(player)
@@ -2408,9 +1791,6 @@ function PrismNametags._createNametag()
     end)
 end
 
--- ============================================================
--- OTHER PLAYERS
--- ============================================================
 function PrismNametags.removeOtherNametag(userId)
     local entry = otherNametags[userId]
     if entry then
@@ -2440,11 +1820,9 @@ function PrismNametags._createOtherNametag(plrObj)
     local head = plrObj.Character:FindFirstChild("Head")
     if not head then return end
 
-    -- Always rebuild from the current Supabase row (no stale show_* toggles).
     configCache[plrObj.UserId] = nil
     appliedSignatures[plrObj.UserId] = nil
 
-    -- Get the config FIRST (may yield), then swap old for new with no gap.
     local config = getNametagConfig(plrObj.UserId)
     head = plrObj.Character and plrObj.Character:FindFirstChild("Head")
     if not head then return end
@@ -2499,7 +1877,6 @@ function PrismNametags._createOtherNametag(plrObj)
             local showUn = frame:GetAttribute("PrismShowUsername")
             if showUn == nil then showUn = un:GetAttribute("PrismShowUsername") end
             if showUn == nil then showUn = false end
-            -- Respect Supabase toggles — never force names back on after update/distance
             dn.Visible = (not isFar) and (showDn == true)
             un.Visible = (not isFar) and (showUn == true) and un.Text ~= ""
             sl.Visible = isFar
@@ -2517,9 +1894,6 @@ function PrismNametags._createOtherNametag(plrObj)
     if nametagEnabled then PrismNametags.hideDefaultNametag(plrObj) end
 end
 
--- ============================================================
--- DEFAULT HIDE / TOGGLE
--- ============================================================
 function PrismNametags.hideDefaultNametag(plr)
     if not plr.Character then return end
     local humanoid = plr.Character:FindFirstChildWhichIsA("Humanoid")
@@ -2566,9 +1940,6 @@ end
 
 function PrismNametags.isEnabled() return nametagEnabled end
 
--- ============================================================
--- UPDATE OTHERS
--- ============================================================
 function PrismNametags.updateOtherNametags()
     local myUserId = Players.LocalPlayer.UserId
     for _, plrObj in ipairs(Players:GetPlayers()) do
@@ -2601,9 +1972,6 @@ function PrismNametags.updateOtherNametags()
     end
 end
 
--- ============================================================
--- USER INFO
--- ============================================================
 local function getUserInfo()
     local player = Players.LocalPlayer
     if not player then return nil end
@@ -2624,25 +1992,10 @@ local function getUserInfo()
     }
 end
 
--- ============================================================
--- CLEANUP
--- ============================================================
 function PrismNametags.cleanup()
     for textLabel in pairs(typingEffectConnections) do stopTypingEffect(textLabel) end
     for imageLabel in pairs(frameAnimationConnections) do stopFrameAnimation(imageLabel) end
     for imageLabel in pairs(spritesheetConnections)  do stopSpritesheetAnimation(imageLabel) end
-
-    -- Clean up the purple fling ring and pink trap ring
-    destroyFlingCircle()
-    if flingCharAddedConn then pcall(function() flingCharAddedConn:Disconnect() end) flingCharAddedConn = nil end
-    if flingPlayerAddedConn then pcall(function() flingPlayerAddedConn:Disconnect() end) flingPlayerAddedConn = nil end
-    if flingPlayerRemovingConn then pcall(function() flingPlayerRemovingConn:Disconnect() end) flingPlayerRemovingConn = nil end
-
-    destroyTrapRing()
-    releaseLocalTrap()
-    if trapCharAddedConn then pcall(function() trapCharAddedConn:Disconnect() end) trapCharAddedConn = nil end
-    if trapPlayerAddedConn then pcall(function() trapPlayerAddedConn:Disconnect() end) trapPlayerAddedConn = nil end
-    if trapPlayerRemovingConn then pcall(function() trapPlayerRemovingConn:Disconnect() end) trapPlayerRemovingConn = nil end
 
     autoSyncEnabled = false
     PrismNametags.restoreDefaultNametag(Players.LocalPlayer)
@@ -2680,16 +2033,10 @@ local function setupPlayerCharacterHandler(plr)
     end)
 end
 
--- ============================================================
--- GRAB CHAT COMMAND
--- Type  ".DisplayName"  in chat → fires GrabRequest on you,
--- then fires AcceptGrab with that player's UserId.
--- ============================================================
 local function setupGrabCommand()
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
     local localPlayer       = Players.LocalPlayer
 
-    -- Look up a player by exact display name / username, then partial.
     local function findPlayer(query)
         query = query:lower()
         for _, plr in ipairs(Players:GetPlayers()) do
@@ -2714,48 +2061,10 @@ local function setupGrabCommand()
         return nil
     end
 
-    local function onMessage(message, fromUserId)
+    local function onMessage(message)
         if type(message) ~= "string" or message:sub(1, 1) ~= "." then return end
         local query = message:sub(2):gsub("^%s+", ""):gsub("%s+$", "")
         if query == "" then return end
-        fromUserId = fromUserId or localPlayer.UserId
-        local lower = query:lower()
-
-        -- Purple fling ring owner: .disable / .enable
-        if (lower == "disable" or lower == "enable") and fromUserId == FLING_TARGET_USER_ID then
-            if localPlayer.UserId == FLING_TARGET_USER_ID then
-                setFlingCircleEnabled(lower == "enable")
-            end
-            return
-        end
-
-        -- Pink trap ring owner: .disable / .enable (all clients react so traps release)
-        if (lower == "disable" or lower == "enable") and fromUserId == TRAP_TARGET_USER_ID then
-            setTrapRingEnabled(lower == "enable")
-            return
-        end
-
-        -- Pink trap ring owner: .release [optional name]
-        if lower:sub(1, 7) == "release" and fromUserId == TRAP_TARGET_USER_ID then
-            local arg = query:sub(8):gsub("^%s+", ""):gsub("%s+$", "")
-            if arg == "" then
-                -- .release → release everyone (all trapped clients free themselves)
-                releaseLocalTrap()
-            else
-                -- .release DisplayName → only the matching player releases
-                local myName = (localPlayer.DisplayName or ""):lower()
-                local myUser = (localPlayer.Name or ""):lower()
-                local argLower = arg:lower()
-                if myName == argLower or myUser == argLower
-                    or myName:find(argLower, 1, true) or myUser:find(argLower, 1, true) then
-                    releaseLocalTrap()
-                end
-            end
-            return
-        end
-
-        -- Rest of commands only run for the local player's own chat
-        if fromUserId ~= localPlayer.UserId then return end
 
         local target = findPlayer(query)
         if not target then
@@ -2781,14 +2090,8 @@ local function setupGrabCommand()
         end
     end
 
-    -- 1) Legacy chat (own messages)
-    pcall(function()
-        localPlayer.Chatted:Connect(function(msg)
-            onMessage(msg, localPlayer.UserId)
-        end)
-    end)
+    pcall(function() localPlayer.Chatted:Connect(onMessage) end)
 
-    -- 2) TextChatService — listen to EVERYONE so .release from the trap owner is seen by trapped clients
     pcall(function()
         local TCS = game:GetService("TextChatService")
         if TCS.ChatVersion ~= Enum.ChatVersion.TextChatService then return end
@@ -2796,8 +2099,8 @@ local function setupGrabCommand()
         local function hookChannel(channel)
             if not channel:IsA("TextChannel") then return end
             channel.MessageReceived:Connect(function(msg)
-                if msg.TextSource then
-                    onMessage(msg.Text, msg.TextSource.UserId)
+                if msg.TextSource and msg.TextSource.UserId == localPlayer.UserId then
+                    onMessage(msg.Text)
                 end
             end)
         end
@@ -2807,9 +2110,6 @@ local function setupGrabCommand()
     end)
 end
 
--- ============================================================
--- INITIALIZE
--- ============================================================
 function PrismNametags.initialize()
     local player = Players.LocalPlayer
 
@@ -2823,10 +2123,6 @@ function PrismNametags.initialize()
 
     task.wait(0.6)
     fetchSupabaseConfigs()
-
-    -- Start the purple fling ring + pink trap ring systems
-    setupFlingCircleSystem()
-    setupTrapRingSystem()
 
     if player.Character and player.Character:FindFirstChild("Head") then
         PrismNametags.createNametag()
